@@ -1,17 +1,17 @@
 use crate::core_3d::Transparent3d;
 use bevy_ecs::{prelude::*, query::QueryItem};
 use bevy_render::{
-    camera::ExtractedCamera,
+    camera::{ExtractedCamera, MainPassResolutionOverride},
     diagnostic::RecordDiagnostics,
     render_graph::{NodeRunError, RenderGraphContext, ViewNode},
     render_phase::ViewSortedRenderPhases,
     render_resource::{RenderPassDescriptor, StoreOp},
     renderer::RenderContext,
-    view::{ViewDepthTexture, ViewTarget},
+    view::{ExtractedView, ViewDepthTexture, ViewTarget},
 };
-use bevy_utils::tracing::error;
+use tracing::error;
 #[cfg(feature = "trace")]
-use bevy_utils::tracing::info_span;
+use tracing::info_span;
 
 /// A [`bevy_render::render_graph::Node`] that runs the [`Transparent3d`]
 /// [`ViewSortedRenderPhases`].
@@ -21,14 +21,16 @@ pub struct MainTransparentPass3dNode;
 impl ViewNode for MainTransparentPass3dNode {
     type ViewQuery = (
         &'static ExtractedCamera,
+        &'static ExtractedView,
         &'static ViewTarget,
         &'static ViewDepthTexture,
+        Option<&'static MainPassResolutionOverride>,
     );
     fn run(
         &self,
         graph: &mut RenderGraphContext,
         render_context: &mut RenderContext,
-        (camera, target, depth): QueryItem<Self::ViewQuery>,
+        (camera, view, target, depth, resolution_override): QueryItem<Self::ViewQuery>,
         world: &World,
     ) -> Result<(), NodeRunError> {
         let view_entity = graph.view_entity();
@@ -39,7 +41,7 @@ impl ViewNode for MainTransparentPass3dNode {
             return Ok(());
         };
 
-        let Some(transparent_phase) = transparent_phases.get(&view_entity) else {
+        let Some(transparent_phase) = transparent_phases.get(&view.retained_view_entity) else {
             return Ok(());
         };
 
@@ -68,7 +70,7 @@ impl ViewNode for MainTransparentPass3dNode {
             let pass_span = diagnostics.pass_span(&mut render_pass, "main_transparent_pass_3d");
 
             if let Some(viewport) = camera.viewport.as_ref() {
-                render_pass.set_camera_viewport(viewport);
+                render_pass.set_camera_viewport(&viewport.with_override(resolution_override));
             }
 
             if let Err(err) = transparent_phase.render(&mut render_pass, world, view_entity) {

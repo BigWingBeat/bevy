@@ -110,7 +110,10 @@ pub trait UiMaterial: AsBindGroup + Asset + Clone + Sized {
         ShaderRef::Default
     }
 
-    #[allow(unused_variables)]
+    #[expect(
+        unused_variables,
+        reason = "The parameters here are intentionally unused by the default implementation; however, putting underscores here will result in the underscores being copied by rust-analyzer's tab completion."
+    )]
     #[inline]
     fn specialize(descriptor: &mut RenderPipelineDescriptor, key: UiMaterialKey<Self>) {}
 }
@@ -138,12 +141,12 @@ where
     fn clone(&self) -> Self {
         Self {
             hdr: self.hdr,
-            bind_group_data: self.bind_group_data.clone(),
+            bind_group_data: self.bind_group_data,
         }
     }
 }
 
-impl<M: UiMaterial> Hash for UiMaterialKey<M>
+impl<M: UiMaterial> core::hash::Hash for UiMaterialKey<M>
 where
     M::Data: Hash,
 {

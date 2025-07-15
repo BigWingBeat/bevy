@@ -1,13 +1,12 @@
 use super::ShaderDefVal;
 use crate::mesh::VertexBufferLayout;
-use crate::renderer::WgpuWrapper;
 use crate::{
     define_atomic_id,
     render_resource::{BindGroupLayout, Shader},
 };
 use alloc::borrow::Cow;
-use alloc::sync::Arc;
 use bevy_asset::Handle;
+use bevy_utils::WgpuWrapper;
 use core::ops::Deref;
 use wgpu::{
     ColorTargetState, DepthStencilState, MultisampleState, PrimitiveState, PushConstantRange,
@@ -22,7 +21,7 @@ define_atomic_id!(RenderPipelineId);
 #[derive(Clone, Debug)]
 pub struct RenderPipeline {
     id: RenderPipelineId,
-    value: Arc<WgpuWrapper<wgpu::RenderPipeline>>,
+    value: WgpuWrapper<wgpu::RenderPipeline>,
 }
 
 impl RenderPipeline {
@@ -36,7 +35,7 @@ impl From<wgpu::RenderPipeline> for RenderPipeline {
     fn from(value: wgpu::RenderPipeline) -> Self {
         RenderPipeline {
             id: RenderPipelineId::new(),
-            value: Arc::new(WgpuWrapper::new(value)),
+            value: WgpuWrapper::new(value),
         }
     }
 }
@@ -59,7 +58,7 @@ define_atomic_id!(ComputePipelineId);
 #[derive(Clone, Debug)]
 pub struct ComputePipeline {
     id: ComputePipelineId,
-    value: Arc<WgpuWrapper<wgpu::ComputePipeline>>,
+    value: WgpuWrapper<wgpu::ComputePipeline>,
 }
 
 impl ComputePipeline {
@@ -74,7 +73,7 @@ impl From<wgpu::ComputePipeline> for ComputePipeline {
     fn from(value: wgpu::ComputePipeline) -> Self {
         ComputePipeline {
             id: ComputePipelineId::new(),
-            value: Arc::new(WgpuWrapper::new(value)),
+            value: WgpuWrapper::new(value),
         }
     }
 }
@@ -89,7 +88,7 @@ impl Deref for ComputePipeline {
 }
 
 /// Describes a render (graphics) pipeline.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct RenderPipelineDescriptor {
     /// Debug label of the pipeline. This will show up in graphics debuggers for easy identification.
     pub label: Option<Cow<'static, str>>,
@@ -113,33 +112,33 @@ pub struct RenderPipelineDescriptor {
     pub zero_initialize_workgroup_memory: bool,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Default)]
 pub struct VertexState {
     /// The compiled shader module for this stage.
     pub shader: Handle<Shader>,
     pub shader_defs: Vec<ShaderDefVal>,
-    /// The name of the entry point in the compiled shader. There must be a
-    /// function with this name in the shader.
-    pub entry_point: Cow<'static, str>,
+    /// The name of the entry point in the compiled shader, or `None` if the default entry point
+    /// is used.
+    pub entry_point: Option<Cow<'static, str>>,
     /// The format of any vertex buffers used with this pipeline.
     pub buffers: Vec<VertexBufferLayout>,
 }
 
 /// Describes the fragment process in a render pipeline.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct FragmentState {
     /// The compiled shader module for this stage.
     pub shader: Handle<Shader>,
     pub shader_defs: Vec<ShaderDefVal>,
-    /// The name of the entry point in the compiled shader. There must be a
-    /// function with this name in the shader.
-    pub entry_point: Cow<'static, str>,
+    /// The name of the entry point in the compiled shader, or `None` if the default entry point
+    /// is used.
+    pub entry_point: Option<Cow<'static, str>>,
     /// The color state of the render targets.
     pub targets: Vec<Option<ColorTargetState>>,
 }
 
 /// Describes a compute pipeline.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct ComputePipelineDescriptor {
     pub label: Option<Cow<'static, str>>,
     pub layout: Vec<BindGroupLayout>,
@@ -147,9 +146,9 @@ pub struct ComputePipelineDescriptor {
     /// The compiled shader module for this stage.
     pub shader: Handle<Shader>,
     pub shader_defs: Vec<ShaderDefVal>,
-    /// The name of the entry point in the compiled shader. There must be a
-    /// function with this name in the shader.
-    pub entry_point: Cow<'static, str>,
+    /// The name of the entry point in the compiled shader, or `None` if the default entry point
+    /// is used.
+    pub entry_point: Option<Cow<'static, str>>,
     /// Whether to zero-initialize workgroup memory by default. If you're not sure, set this to true.
     /// If this is false, reading from workgroup variables before writing to them will result in garbage values.
     pub zero_initialize_workgroup_memory: bool,

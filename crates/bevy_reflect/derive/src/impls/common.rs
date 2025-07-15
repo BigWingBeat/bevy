@@ -1,13 +1,11 @@
-use bevy_macro_utils::fq_std::{FQAny, FQBox, FQOption, FQResult};
+use bevy_macro_utils::fq_std::{FQAny, FQOption, FQResult};
 
 use quote::quote;
 
 use crate::{derive_data::ReflectMeta, where_clause_options::WhereClauseOptions};
 
-pub fn impl_full_reflect(
-    meta: &ReflectMeta,
-    where_clause_options: &WhereClauseOptions,
-) -> proc_macro2::TokenStream {
+pub fn impl_full_reflect(where_clause_options: &WhereClauseOptions) -> proc_macro2::TokenStream {
+    let meta = where_clause_options.meta();
     let bevy_reflect_path = meta.bevy_reflect_path();
     let type_path = meta.type_path();
 
@@ -17,8 +15,8 @@ pub fn impl_full_reflect(
     let any_impls = if meta.is_remote_wrapper() {
         quote! {
             #[inline]
-            fn into_any(self: #FQBox<Self>) -> #FQBox<dyn #FQAny> {
-                #FQBox::new(self.0)
+            fn into_any(self: #bevy_reflect_path::__macro_exports::alloc_utils::Box<Self>) -> #bevy_reflect_path::__macro_exports::alloc_utils::Box<dyn #FQAny> {
+                #bevy_reflect_path::__macro_exports::alloc_utils::Box::new(self.0)
             }
 
             #[inline]
@@ -34,7 +32,7 @@ pub fn impl_full_reflect(
     } else {
         quote! {
             #[inline]
-            fn into_any(self: #FQBox<Self>) -> #FQBox<dyn #FQAny> {
+            fn into_any(self: #bevy_reflect_path::__macro_exports::alloc_utils::Box<Self>) -> #bevy_reflect_path::__macro_exports::alloc_utils::Box<dyn #FQAny> {
                 self
             }
 
@@ -55,7 +53,7 @@ pub fn impl_full_reflect(
             #any_impls
 
             #[inline]
-            fn into_reflect(self: #FQBox<Self>) -> #FQBox<dyn #bevy_reflect_path::Reflect> {
+            fn into_reflect(self: #bevy_reflect_path::__macro_exports::alloc_utils::Box<Self>) -> #bevy_reflect_path::__macro_exports::alloc_utils::Box<dyn #bevy_reflect_path::Reflect> {
                 self
             }
 
@@ -72,8 +70,8 @@ pub fn impl_full_reflect(
             #[inline]
             fn set(
                 &mut self,
-                value: #FQBox<dyn #bevy_reflect_path::Reflect>
-            ) -> #FQResult<(), #FQBox<dyn #bevy_reflect_path::Reflect>> {
+                value: #bevy_reflect_path::__macro_exports::alloc_utils::Box<dyn #bevy_reflect_path::Reflect>
+            ) -> #FQResult<(), #bevy_reflect_path::__macro_exports::alloc_utils::Box<dyn #bevy_reflect_path::Reflect>> {
                 *self = <dyn #bevy_reflect_path::Reflect>::take(value)?;
                 #FQResult::Ok(())
             }
@@ -119,8 +117,8 @@ pub fn common_partial_reflect_methods(
     quote! {
         #[inline]
         fn try_into_reflect(
-            self: #FQBox<Self>
-        ) -> #FQResult<#FQBox<dyn #bevy_reflect_path::Reflect>, #FQBox<dyn #bevy_reflect_path::PartialReflect>> {
+            self: #bevy_reflect_path::__macro_exports::alloc_utils::Box<Self>
+        ) -> #FQResult<#bevy_reflect_path::__macro_exports::alloc_utils::Box<dyn #bevy_reflect_path::Reflect>, #bevy_reflect_path::__macro_exports::alloc_utils::Box<dyn #bevy_reflect_path::PartialReflect>> {
             #FQResult::Ok(self)
         }
 
@@ -135,7 +133,7 @@ pub fn common_partial_reflect_methods(
         }
 
         #[inline]
-        fn into_partial_reflect(self: #FQBox<Self>) -> #FQBox<dyn #bevy_reflect_path::PartialReflect> {
+        fn into_partial_reflect(self: #bevy_reflect_path::__macro_exports::alloc_utils::Box<Self>) -> #bevy_reflect_path::__macro_exports::alloc_utils::Box<dyn #bevy_reflect_path::PartialReflect> {
             self
         }
 

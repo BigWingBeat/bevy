@@ -1,8 +1,8 @@
 //! Demonstrates how to observe life-cycle triggers as well as define custom ones.
 
 use bevy::{
+    platform::collections::{HashMap, HashSet},
     prelude::*,
-    utils::{HashMap, HashSet},
 };
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
@@ -16,7 +16,7 @@ fn main() {
         // Observers are systems that run when an event is "triggered". This observer runs whenever
         // `ExplodeMines` is triggered.
         .add_observer(
-            |trigger: Trigger<ExplodeMines>,
+            |trigger: On<ExplodeMines>,
              mines: Query<&Mine>,
              index: Res<SpatialIndex>,
              mut commands: Commands| {
@@ -52,10 +52,10 @@ impl Mine {
     fn random(rand: &mut ChaCha8Rng) -> Self {
         Mine {
             pos: Vec2::new(
-                (rand.gen::<f32>() - 0.5) * 1200.0,
-                (rand.gen::<f32>() - 0.5) * 600.0,
+                (rand.r#gen::<f32>() - 0.5) * 1200.0,
+                (rand.r#gen::<f32>() - 0.5) * 600.0,
             ),
-            size: 4.0 + rand.gen::<f32>() * 16.0,
+            size: 4.0 + rand.r#gen::<f32>() * 16.0,
         }
     }
 }
@@ -66,7 +66,7 @@ struct ExplodeMines {
     radius: f32,
 }
 
-#[derive(Event)]
+#[derive(EntityEvent)]
 struct Explode;
 
 fn setup(mut commands: Commands) {
@@ -112,42 +112,34 @@ fn setup(mut commands: Commands) {
     commands.spawn(observer);
 }
 
-fn on_add_mine(
-    trigger: Trigger<OnAdd, Mine>,
-    query: Query<&Mine>,
-    mut index: ResMut<SpatialIndex>,
-) {
-    let mine = query.get(trigger.entity()).unwrap();
+fn on_add_mine(trigger: On<Add, Mine>, query: Query<&Mine>, mut index: ResMut<SpatialIndex>) {
+    let mine = query.get(trigger.target()).unwrap();
     let tile = (
         (mine.pos.x / CELL_SIZE).floor() as i32,
         (mine.pos.y / CELL_SIZE).floor() as i32,
     );
-    index.map.entry(tile).or_default().insert(trigger.entity());
+    index.map.entry(tile).or_default().insert(trigger.target());
 }
 
 // Remove despawned mines from our index
-fn on_remove_mine(
-    trigger: Trigger<OnRemove, Mine>,
-    query: Query<&Mine>,
-    mut index: ResMut<SpatialIndex>,
-) {
-    let mine = query.get(trigger.entity()).unwrap();
+fn on_remove_mine(trigger: On<Remove, Mine>, query: Query<&Mine>, mut index: ResMut<SpatialIndex>) {
+    let mine = query.get(trigger.target()).unwrap();
     let tile = (
         (mine.pos.x / CELL_SIZE).floor() as i32,
         (mine.pos.y / CELL_SIZE).floor() as i32,
     );
     index.map.entry(tile).and_modify(|set| {
-        set.remove(&trigger.entity());
+        set.remove(&trigger.target());
     });
 }
 
-fn explode_mine(trigger: Trigger<Explode>, query: Query<&Mine>, mut commands: Commands) {
-    // If a triggered event is targeting a specific entity you can access it with `.entity()`
-    let id = trigger.entity();
-    let Some(mut entity) = commands.get_entity(id) else {
+fn explode_mine(trigger: On<Explode>, query: Query<&Mine>, mut commands: Commands) {
+    // If a triggered event is targeting a specific entity you can access it with `.target()`
+    let id = trigger.target();
+    let Ok(mut entity) = commands.get_entity(id) else {
         return;
     };
-    info!("Boom! {:?} exploded.", id.index());
+    info!("Boom! {} exploded.", id.index());
     entity.despawn();
     let mine = query.get(id).unwrap();
     // Trigger another explosion cascade.
@@ -172,9 +164,13 @@ fn draw_shapes(mut gizmos: Gizmos, mines: Query<&Mine>) {
 fn handle_click(
     mouse_button_input: Res<ButtonInput<MouseButton>>,
     camera: Single<(&Camera, &GlobalTransform)>,
-    windows: Single<&Window>,
+    windows: Query<&Window>,
     mut commands: Commands,
 ) {
+    let Ok(windows) = windows.single() else {
+        return;
+    };
+
     let (camera, camera_transform) = *camera;
     if let Some(pos) = windows
         .cursor_position()

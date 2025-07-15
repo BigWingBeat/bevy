@@ -2,6 +2,7 @@
 
 use bevy::{
     color::palettes::css::{DARK_CYAN, DARK_GRAY, YELLOW},
+    ecs::{component::Mutable, hierarchy::ChildSpawnerCommands},
     prelude::*,
     winit::WinitSettings,
 };
@@ -42,7 +43,7 @@ impl<T> Target<T> {
 }
 
 trait TargetUpdate {
-    type TargetComponent: Component;
+    type TargetComponent: Component<Mutability = Mutable>;
     const NAME: &'static str;
     fn update_target(&self, target: &mut Self::TargetComponent) -> String;
 }
@@ -98,7 +99,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
             parent.spawn((
                 Text::new("Use the panel on the right to change the Display and Visibility properties for the respective nodes of the panel on the left"),
                 text_font.clone(),
-                TextLayout::new_with_justify(JustifyText::Center),
+                TextLayout::new_with_justify(Justify::Center),
                 Node {
                     margin: UiRect::bottom(Val::Px(10.)),
                     ..Default::default()
@@ -152,20 +153,20 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
                         Text::new("Display::None\nVisibility::Hidden\nVisibility::Inherited"),
                         text_font.clone(),
                         TextColor(HIDDEN_COLOR),
-                        TextLayout::new_with_justify(JustifyText::Center),
+                        TextLayout::new_with_justify(Justify::Center),
                     ));
                     builder.spawn((
                         Text::new("-\n-\n-"),
                         text_font.clone(),
                         TextColor(DARK_GRAY.into()),
-                        TextLayout::new_with_justify(JustifyText::Center),
+                        TextLayout::new_with_justify(Justify::Center),
                     ));
                     builder.spawn((Text::new("The UI Node and its descendants will not be visible and will not be allotted any space in the UI layout.\nThe UI Node will not be visible but will still occupy space in the UI layout.\nThe UI node will inherit the visibility property of its parent. If it has no parent it will be visible."), text_font));
                 });
         });
 }
 
-fn spawn_left_panel(builder: &mut ChildBuilder, palette: &[Color; 4]) -> Vec<Entity> {
+fn spawn_left_panel(builder: &mut ChildSpawnerCommands, palette: &[Color; 4]) -> Vec<Entity> {
     let mut target_ids = vec![];
     builder
         .spawn((
@@ -260,12 +261,12 @@ fn spawn_left_panel(builder: &mut ChildBuilder, palette: &[Color; 4]) -> Vec<Ent
 }
 
 fn spawn_right_panel(
-    parent: &mut ChildBuilder,
+    parent: &mut ChildSpawnerCommands,
     text_font: TextFont,
     palette: &[Color; 4],
     mut target_ids: Vec<Entity>,
 ) {
-    let spawn_buttons = |parent: &mut ChildBuilder, target_id| {
+    let spawn_buttons = |parent: &mut ChildSpawnerCommands, target_id| {
         spawn_button::<Display>(parent, text_font.clone(), target_id);
         spawn_button::<Visibility>(parent, text_font.clone(), target_id);
     };
@@ -375,7 +376,7 @@ fn spawn_right_panel(
         });
 }
 
-fn spawn_button<T>(parent: &mut ChildBuilder, text_font: TextFont, target: Entity)
+fn spawn_button<T>(parent: &mut ChildSpawnerCommands, text_font: TextFont, target: Entity)
 where
     T: Default + std::fmt::Debug + Send + Sync + 'static,
     Target<T>: TargetUpdate,
@@ -395,7 +396,7 @@ where
             builder.spawn((
                 Text(format!("{}::{:?}", Target::<T>::NAME, T::default())),
                 text_font,
-                TextLayout::new_with_justify(JustifyText::Center),
+                TextLayout::new_with_justify(Justify::Center),
             ));
         });
 }

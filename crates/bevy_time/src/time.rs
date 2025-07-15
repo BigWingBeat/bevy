@@ -1,5 +1,5 @@
-use bevy_ecs::system::Resource;
-use bevy_utils::Duration;
+use bevy_ecs::resource::Resource;
+use core::time::Duration;
 #[cfg(feature = "bevy_reflect")]
 use {
     bevy_ecs::reflect::ReflectResource,
@@ -119,7 +119,7 @@ use {
 /// # use bevy_ecs::prelude::*;
 /// # use bevy_time::prelude::*;
 /// #
-/// #[derive(Event)]
+/// #[derive(BufferedEvent)]
 /// struct PauseEvent(bool);
 ///
 /// fn pause_system(mut time: ResMut<Time<Virtual>>, mut events: EventReader<PauseEvent>) {
@@ -160,7 +160,7 @@ use {
 /// ```
 /// # use bevy_ecs::prelude::*;
 /// # use bevy_time::prelude::*;
-/// # use bevy_utils::Instant;
+/// # use bevy_platform::time::Instant;
 /// #
 /// #[derive(Debug)]
 /// struct Custom {

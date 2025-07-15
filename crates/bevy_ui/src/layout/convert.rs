@@ -1,7 +1,7 @@
 use taffy::style_helpers;
 
 use crate::{
-    AlignContent, AlignItems, AlignSelf, Display, FlexDirection, FlexWrap, GridAutoFlow,
+    AlignContent, AlignItems, AlignSelf, BoxSizing, Display, FlexDirection, FlexWrap, GridAutoFlow,
     GridPlacement, GridTrack, GridTrackRepetition, JustifyContent, JustifyItems, JustifySelf,
     MaxTrackSizingFunction, MinTrackSizingFunction, Node, OverflowAxis, PositionType,
     RepeatedGridTrack, UiRect, Val,
@@ -20,12 +20,12 @@ impl Val {
             Val::Px(value) => {
                 taffy::style::LengthPercentageAuto::Length(context.scale_factor * value)
             }
-            Val::VMin(value) => {
-                taffy::style::LengthPercentageAuto::Length(context.min_size * value / 100.)
-            }
-            Val::VMax(value) => {
-                taffy::style::LengthPercentageAuto::Length(context.max_size * value / 100.)
-            }
+            Val::VMin(value) => taffy::style::LengthPercentageAuto::Length(
+                context.physical_size.min_element() * value / 100.,
+            ),
+            Val::VMax(value) => taffy::style::LengthPercentageAuto::Length(
+                context.physical_size.max_element() * value / 100.,
+            ),
             Val::Vw(value) => {
                 taffy::style::LengthPercentageAuto::Length(context.physical_size.x * value / 100.)
             }
@@ -66,11 +66,14 @@ impl UiRect {
 pub fn from_node(node: &Node, context: &LayoutContext, ignore_border: bool) -> taffy::style::Style {
     taffy::style::Style {
         display: node.display.into(),
+        box_sizing: node.box_sizing.into(),
+        item_is_table: false,
+        text_align: taffy::TextAlign::Auto,
         overflow: taffy::Point {
             x: node.overflow.x.into(),
             y: node.overflow.y.into(),
         },
-        scrollbar_width: 0.0,
+        scrollbar_width: node.scrollbar_width * context.scale_factor,
         position: node.position_type.into(),
         flex_direction: node.flex_direction.into(),
         flex_wrap: node.flex_wrap.into(),
@@ -243,6 +246,15 @@ impl From<Display> for taffy::style::Display {
             Display::Grid => taffy::style::Display::Grid,
             Display::Block => taffy::style::Display::Block,
             Display::None => taffy::style::Display::None,
+        }
+    }
+}
+
+impl From<BoxSizing> for taffy::style::BoxSizing {
+    fn from(value: BoxSizing) -> Self {
+        match value {
+            BoxSizing::BorderBox => taffy::style::BoxSizing::BorderBox,
+            BoxSizing::ContentBox => taffy::style::BoxSizing::ContentBox,
         }
     }
 }
@@ -436,6 +448,8 @@ impl RepeatedGridTrack {
 
 #[cfg(test)]
 mod tests {
+    use bevy_math::Vec2;
+
     use super::*;
 
     #[test]
@@ -445,6 +459,7 @@ mod tests {
 
         let node = Node {
             display: Display::Flex,
+            box_sizing: BoxSizing::ContentBox,
             position_type: PositionType::Absolute,
             left: Val::ZERO,
             right: Val::Percent(50.),
@@ -488,6 +503,7 @@ mod tests {
             aspect_ratio: None,
             overflow: crate::Overflow::clip(),
             overflow_clip_margin: crate::OverflowClipMargin::default(),
+            scrollbar_width: 7.,
             column_gap: Val::ZERO,
             row_gap: Val::ZERO,
             grid_auto_flow: GridAutoFlow::ColumnDense,
@@ -510,9 +526,10 @@ mod tests {
             grid_column: GridPlacement::start(4),
             grid_row: GridPlacement::span(3),
         };
-        let viewport_values = LayoutContext::new(1.0, bevy_math::Vec2::new(800., 600.));
+        let viewport_values = LayoutContext::new(1.0, Vec2::new(800., 600.));
         let taffy_style = from_node(&node, &viewport_values, false);
         assert_eq!(taffy_style.display, taffy::style::Display::Flex);
+        assert_eq!(taffy_style.box_sizing, taffy::style::BoxSizing::ContentBox);
         assert_eq!(taffy_style.position, taffy::style::Position::Absolute);
         assert_eq!(
             taffy_style.inset.left,
@@ -608,6 +625,7 @@ mod tests {
         assert_eq!(taffy_style.max_size.width, taffy::style::Dimension::Auto);
         assert_eq!(taffy_style.max_size.height, taffy::style::Dimension::ZERO);
         assert_eq!(taffy_style.aspect_ratio, None);
+        assert_eq!(taffy_style.scrollbar_width, 7.);
         assert_eq!(taffy_style.gap.width, taffy::style::LengthPercentage::ZERO);
         assert_eq!(taffy_style.gap.height, taffy::style::LengthPercentage::ZERO);
         assert_eq!(
@@ -647,7 +665,7 @@ mod tests {
     #[test]
     fn test_into_length_percentage() {
         use taffy::style::LengthPercentage;
-        let context = LayoutContext::new(2.0, bevy_math::Vec2::new(800., 600.));
+        let context = LayoutContext::new(2.0, Vec2::new(800., 600.));
         let cases = [
             (Val::Auto, LengthPercentage::Length(0.)),
             (Val::Percent(1.), LengthPercentage::Percent(0.01)),

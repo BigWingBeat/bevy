@@ -1,9 +1,10 @@
 use crate::generics::impl_generic_info_methods;
 use crate::{
-    self as bevy_reflect, type_info::impl_type_methods, utility::reflect_hasher, ApplyError,
-    Generics, MaybeTyped, PartialReflect, Reflect, ReflectKind, ReflectMut, ReflectOwned,
-    ReflectRef, Type, TypeInfo, TypePath,
+    type_info::impl_type_methods, utility::reflect_hasher, ApplyError, Generics, MaybeTyped,
+    PartialReflect, Reflect, ReflectKind, ReflectMut, ReflectOwned, ReflectRef, Type, TypeInfo,
+    TypePath,
 };
+use alloc::{boxed::Box, vec::Vec};
 use bevy_reflect_derive::impl_type_path;
 use core::{
     any::Any,
@@ -67,11 +68,11 @@ pub trait Array: PartialReflect {
     /// Drain the elements of this array to get a vector of owned values.
     fn drain(self: Box<Self>) -> Vec<Box<dyn PartialReflect>>;
 
-    /// Clones the list, producing a [`DynamicArray`].
-    fn clone_dynamic(&self) -> DynamicArray {
+    /// Creates a new [`DynamicArray`] from this array.
+    fn to_dynamic_array(&self) -> DynamicArray {
         DynamicArray {
             represented_type: self.get_represented_type_info(),
-            values: self.iter().map(PartialReflect::clone_value).collect(),
+            values: self.iter().map(PartialReflect::to_dynamic).collect(),
         }
     }
 
@@ -166,17 +167,13 @@ pub struct DynamicArray {
 }
 
 impl DynamicArray {
+    /// Creates a new [`DynamicArray`].
     #[inline]
     pub fn new(values: Box<[Box<dyn PartialReflect>]>) -> Self {
         Self {
             represented_type: None,
             values,
         }
-    }
-
-    #[deprecated(since = "0.15.0", note = "use from_iter")]
-    pub fn from_vec<T: PartialReflect>(values: Vec<T>) -> Self {
-        Self::from_iter(values)
     }
 
     /// Sets the [type] to be represented by this `DynamicArray`.
@@ -190,8 +187,7 @@ impl DynamicArray {
         if let Some(represented_type) = represented_type {
             assert!(
                 matches!(represented_type, TypeInfo::Array(_)),
-                "expected TypeInfo::Array but received: {:?}",
-                represented_type
+                "expected TypeInfo::Array but received: {represented_type:?}"
             );
         }
 
@@ -261,11 +257,6 @@ impl PartialReflect for DynamicArray {
     }
 
     #[inline]
-    fn clone_value(&self) -> Box<dyn PartialReflect> {
-        Box::new(self.clone_dynamic())
-    }
-
-    #[inline]
     fn reflect_hash(&self) -> Option<u64> {
         array_hash(self)
     }
@@ -310,18 +301,6 @@ impl Array for DynamicArray {
     #[inline]
     fn drain(self: Box<Self>) -> Vec<Box<dyn PartialReflect>> {
         self.values.into_vec()
-    }
-
-    #[inline]
-    fn clone_dynamic(&self) -> DynamicArray {
-        DynamicArray {
-            represented_type: self.represented_type,
-            values: self
-                .values
-                .iter()
-                .map(|value| value.clone_value())
-                .collect(),
-        }
     }
 }
 
@@ -512,6 +491,8 @@ pub fn array_debug(dyn_array: &dyn Array, f: &mut Formatter<'_>) -> core::fmt::R
 #[cfg(test)]
 mod tests {
     use crate::Reflect;
+    use alloc::boxed::Box;
+
     #[test]
     fn next_index_increment() {
         const SIZE: usize = if cfg!(debug_assertions) {

@@ -1,10 +1,9 @@
-// FIXME(15321): solve CI failures, then replace with `#![expect()]`.
-#![allow(missing_docs, reason = "Not all docs are written yet, see #3492.")]
-#![allow(unsafe_code)]
+#![expect(missing_docs, reason = "Not all docs are written yet, see #3492.")]
 
 extern crate alloc;
 extern crate core;
 
+mod components;
 mod conversions;
 mod index;
 mod mesh;
@@ -14,11 +13,13 @@ pub mod primitives;
 pub mod skinning;
 mod vertex;
 use bitflags::bitflags;
+pub use components::*;
 pub use index::*;
 pub use mesh::*;
 pub use mikktspace::*;
 pub use primitives::*;
 pub use vertex::*;
+pub use wgpu_types::VertexFormat;
 
 bitflags! {
     /// Our base mesh pipeline key bits start from the highest bit and go

@@ -1,7 +1,11 @@
 use crate::{serde::Serializable, FromReflect, Reflect, TypeInfo, TypePath, Typed};
-use alloc::sync::Arc;
+use alloc::{boxed::Box, string::String};
+use bevy_platform::{
+    collections::{HashMap, HashSet},
+    sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard},
+};
 use bevy_ptr::{Ptr, PtrMut};
-use bevy_utils::{HashMap, HashSet, TypeIdMap};
+use bevy_utils::TypeIdMap;
 use core::{
     any::TypeId,
     fmt::Debug,
@@ -9,7 +13,6 @@ use core::{
 };
 use downcast_rs::{impl_downcast, Downcast};
 use serde::Deserialize;
-use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 /// A registry of [reflected] types.
 ///
@@ -35,6 +38,7 @@ pub struct TypeRegistry {
 /// A synchronized wrapper around a [`TypeRegistry`].
 #[derive(Clone, Default)]
 pub struct TypeRegistryArc {
+    /// The wrapped [`TypeRegistry`].
     pub internal: Arc<RwLock<TypeRegistry>>,
 }
 
@@ -73,8 +77,7 @@ pub trait GetTypeRegistration: 'static {
     ///
     /// This method is called by [`TypeRegistry::register`] to register any other required types.
     /// Often, this is done for fields of structs and enum variants to ensure all types are properly registered.
-    #[allow(unused_variables)]
-    fn register_type_dependencies(registry: &mut TypeRegistry) {}
+    fn register_type_dependencies(_registry: &mut TypeRegistry) {}
 }
 
 impl Default for TypeRegistry {
@@ -131,7 +134,7 @@ impl TypeRegistry {
     /// # Example
     ///
     /// ```
-    /// # use std::any::TypeId;
+    /// # use core::any::TypeId;
     /// # use bevy_reflect::{Reflect, TypeRegistry, std_traits::ReflectDefault};
     /// #[derive(Reflect, Default)]
     /// #[reflect(Default)]
@@ -161,6 +164,43 @@ impl TypeRegistry {
         if self.register_internal(TypeId::of::<T>(), T::get_type_registration) {
             T::register_type_dependencies(self);
         }
+    }
+
+    /// Attempts to register the referenced type `T` if it has not yet been registered.
+    ///
+    /// See [`register`] for more details.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use bevy_reflect::{Reflect, TypeRegistry};
+    /// # use core::any::TypeId;
+    /// #
+    /// # let mut type_registry = TypeRegistry::default();
+    /// #
+    /// #[derive(Reflect)]
+    /// struct Foo {
+    ///   bar: Bar,
+    /// }
+    ///
+    /// #[derive(Reflect)]
+    /// struct Bar;
+    ///
+    /// let foo = Foo { bar: Bar };
+    ///
+    /// // Equivalent to `type_registry.register::<Foo>()`
+    /// type_registry.register_by_val(&foo);
+    ///
+    /// assert!(type_registry.contains(TypeId::of::<Foo>()));
+    /// assert!(type_registry.contains(TypeId::of::<Bar>()));
+    /// ```
+    ///
+    /// [`register`]: Self::register
+    pub fn register_by_val<T>(&mut self, _: &T)
+    where
+        T: GetTypeRegistration,
+    {
+        self.register::<T>();
     }
 
     /// Attempts to register the type described by `registration`.
@@ -211,9 +251,11 @@ impl TypeRegistry {
         type_id: TypeId,
         get_registration: impl FnOnce() -> TypeRegistration,
     ) -> bool {
+        use bevy_platform::collections::hash_map::Entry;
+
         match self.registrations.entry(type_id) {
-            bevy_utils::Entry::Occupied(_) => false,
-            bevy_utils::Entry::Vacant(entry) => {
+            Entry::Occupied(_) => false,
+            Entry::Vacant(entry) => {
                 let registration = get_registration();
                 Self::update_registration_indices(
                     &registration,
@@ -272,6 +314,7 @@ impl TypeRegistry {
         data.insert(D::from_type());
     }
 
+    /// Whether the type with given [`TypeId`] has been registered in this registry.
     pub fn contains(&self, type_id: TypeId) -> bool {
         self.registrations.contains_key(&type_id)
     }
@@ -643,8 +686,10 @@ impl Clone for TypeRegistration {
 ///
 /// [crate-level documentation]: crate
 pub trait TypeData: Downcast + Send + Sync {
+    /// Creates a type-erased clone of this value.
     fn clone_type_data(&self) -> Box<dyn TypeData>;
 }
+
 impl_downcast!(TypeData);
 
 impl<T: 'static + Send + Sync> TypeData for T
@@ -661,6 +706,7 @@ where
 /// This is used by the `#[derive(Reflect)]` macro to generate an implementation
 /// of [`TypeData`] to pass to [`TypeRegistration::insert`].
 pub trait FromType<T> {
+    /// Creates an instance of `Self` for type `T`.
     fn from_type() -> Self;
 }
 
@@ -705,6 +751,8 @@ impl ReflectSerialize {
 /// [`FromType::from_type`].
 #[derive(Clone)]
 pub struct ReflectDeserialize {
+    /// Function used by [`ReflectDeserialize::deserialize`] to
+    /// perform deserialization.
     pub func: fn(
         deserializer: &mut dyn erased_serde::Deserializer,
     ) -> Result<Box<dyn Reflect>, erased_serde::Error>,
@@ -746,7 +794,7 @@ impl<T: for<'a> Deserialize<'a> + Reflect> FromType<T> for ReflectDeserialize {
 /// ```
 /// use bevy_reflect::{TypeRegistry, Reflect, ReflectFromPtr};
 /// use bevy_ptr::Ptr;
-/// use std::ptr::NonNull;
+/// use core::ptr::NonNull;
 ///
 /// #[derive(Reflect)]
 /// struct Reflected(String);
@@ -757,7 +805,7 @@ impl<T: for<'a> Deserialize<'a> + Reflect> FromType<T> for ReflectDeserialize {
 /// let mut value = Reflected("Hello world!".to_string());
 /// let value = Ptr::from(&value);
 ///
-/// let reflect_data = type_registry.get(std::any::TypeId::of::<Reflected>()).unwrap();
+/// let reflect_data = type_registry.get(core::any::TypeId::of::<Reflected>()).unwrap();
 /// let reflect_from_ptr = reflect_data.data::<ReflectFromPtr>().unwrap();
 /// // SAFE: `value` is of type `Reflected`, which the `ReflectFromPtr` was created for
 /// let value = unsafe { reflect_from_ptr.as_reflect(value) };
@@ -771,7 +819,10 @@ pub struct ReflectFromPtr {
     from_ptr_mut: unsafe fn(PtrMut) -> &mut dyn Reflect,
 }
 
-#[allow(unsafe_code)]
+#[expect(
+    unsafe_code,
+    reason = "We must interact with pointers here, which are inherently unsafe."
+)]
 impl ReflectFromPtr {
     /// Returns the [`TypeId`] that the [`ReflectFromPtr`] was constructed for.
     pub fn type_id(&self) -> TypeId {
@@ -823,7 +874,10 @@ impl ReflectFromPtr {
     }
 }
 
-#[allow(unsafe_code)]
+#[expect(
+    unsafe_code,
+    reason = "We must interact with pointers here, which are inherently unsafe."
+)]
 impl<T: Reflect> FromType<T> for ReflectFromPtr {
     fn from_type() -> Self {
         ReflectFromPtr {
@@ -843,10 +897,12 @@ impl<T: Reflect> FromType<T> for ReflectFromPtr {
 }
 
 #[cfg(test)]
-#[allow(unsafe_code)]
+#[expect(
+    unsafe_code,
+    reason = "We must interact with pointers here, which are inherently unsafe."
+)]
 mod test {
     use super::*;
-    use crate as bevy_reflect;
 
     #[test]
     fn test_reflect_from_ptr() {

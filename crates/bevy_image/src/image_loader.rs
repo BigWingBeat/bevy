@@ -1,6 +1,6 @@
 use crate::image::{Image, ImageFormat, ImageType, TextureError};
 use bevy_asset::{io::Reader, AssetLoader, LoadContext, RenderAssetUsages};
-use derive_more::derive::{Display, Error, From};
+use thiserror::Error;
 
 use super::{CompressedImageFormats, ImageSampler};
 use serde::{Deserialize, Serialize};
@@ -81,19 +81,35 @@ impl ImageLoader {
     }
 }
 
-#[derive(Serialize, Deserialize, Default, Debug)]
+/// How to determine an image's format when loading.
+#[derive(Serialize, Deserialize, Default, Debug, Clone)]
 pub enum ImageFormatSetting {
+    /// Determine the image format from its file extension.
+    ///
+    /// This is the default.
     #[default]
     FromExtension,
+    /// Declare the image format explicitly.
     Format(ImageFormat),
+    /// Guess the image format by looking for magic bytes at the
+    /// beginning of its data.
     Guess,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+/// Settings for loading an [`Image`] using an [`ImageLoader`].
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ImageLoaderSettings {
+    /// How to determine the image's format.
     pub format: ImageFormatSetting,
+    /// Specifies whether image data is linear
+    /// or in sRGB space when this is not determined by
+    /// the image format.
     pub is_srgb: bool,
+    /// [`ImageSampler`] to use when rendering - this does
+    /// not affect the loading of the image data.
     pub sampler: ImageSampler,
+    /// Where the asset will be used - see the docs on
+    /// [`RenderAssetUsages`] for details.
     pub asset_usage: RenderAssetUsages,
 }
 
@@ -108,13 +124,16 @@ impl Default for ImageLoaderSettings {
     }
 }
 
+/// An error when loading an image using [`ImageLoader`].
 #[non_exhaustive]
-#[derive(Debug, Error, Display, From)]
+#[derive(Debug, Error)]
 pub enum ImageLoaderError {
-    #[display("Could load shader: {_0}")]
-    Io(std::io::Error),
-    #[display("Could not load texture file: {_0}")]
-    FileTexture(FileTextureError),
+    /// An error occurred while trying to load the image bytes.
+    #[error("Failed to load image bytes: {0}")]
+    Io(#[from] std::io::Error),
+    /// An error occurred while trying to decode the image bytes.
+    #[error("Could not load texture file: {0}")]
+    FileTexture(#[from] FileTextureError),
 }
 
 impl AssetLoader for ImageLoader {
@@ -150,8 +169,6 @@ impl AssetLoader for ImageLoader {
             }
         };
         Ok(Image::from_buffer(
-            #[cfg(all(debug_assertions, feature = "dds"))]
-            load_context.path().display().to_string(),
             &bytes,
             image_type,
             self.supported_compressed_formats,
@@ -171,8 +188,8 @@ impl AssetLoader for ImageLoader {
 }
 
 /// An error that occurs when loading a texture from a file.
-#[derive(Error, Display, Debug)]
-#[display("Error reading image file {path}: {error}, this is an error in `bevy_render`.")]
+#[derive(Error, Debug)]
+#[error("Error reading image file {path}: {error}.")]
 pub struct FileTextureError {
     error: TextureError,
     path: String,

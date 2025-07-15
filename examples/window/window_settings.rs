@@ -2,12 +2,13 @@
 //! the mouse pointer in various ways.
 
 #[cfg(feature = "custom_cursor")]
-use bevy::winit::cursor::CustomCursor;
+use bevy::winit::cursor::{CustomCursor, CustomCursorImage};
 use bevy::{
-    core::FrameCount,
-    diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
+    diagnostic::{FrameCount, FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
     prelude::*,
-    window::{CursorGrabMode, PresentMode, SystemCursorIcon, WindowLevel, WindowTheme},
+    window::{
+        CursorGrabMode, CursorOptions, PresentMode, SystemCursorIcon, WindowLevel, WindowTheme,
+    },
     winit::cursor::CursorIcon,
 };
 
@@ -38,7 +39,7 @@ fn main() {
                 ..default()
             }),
             LogDiagnosticsPlugin::default(),
-            FrameTimeDiagnosticsPlugin,
+            FrameTimeDiagnosticsPlugin::default(),
         ))
         .add_systems(Startup, init_cursor_icons)
         .add_systems(
@@ -129,10 +130,10 @@ fn change_title(mut window: Single<&mut Window>, time: Res<Time>) {
     );
 }
 
-fn toggle_cursor(mut window: Single<&mut Window>, input: Res<ButtonInput<KeyCode>>) {
+fn toggle_cursor(mut cursor_options: Single<&mut CursorOptions>, input: Res<ButtonInput<KeyCode>>) {
     if input.just_pressed(KeyCode::Space) {
-        window.cursor_options.visible = !window.cursor_options.visible;
-        window.cursor_options.grab_mode = match window.cursor_options.grab_mode {
+        cursor_options.visible = !cursor_options.visible;
+        cursor_options.grab_mode = match cursor_options.grab_mode {
             CursorGrabMode::None => CursorGrabMode::Locked,
             CursorGrabMode::Locked | CursorGrabMode::Confined => CursorGrabMode::None,
         };
@@ -164,10 +165,11 @@ fn init_cursor_icons(
         SystemCursorIcon::Wait.into(),
         SystemCursorIcon::Text.into(),
         #[cfg(feature = "custom_cursor")]
-        CustomCursor::Image {
+        CustomCursor::Image(CustomCursorImage {
             handle: asset_server.load("branding/icon.png"),
             hotspot: (128, 128),
-        }
+            ..Default::default()
+        })
         .into(),
     ]));
 }

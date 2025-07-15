@@ -51,7 +51,10 @@ fn bounce_ray(mut ray: Ray3d, ray_cast: &mut MeshRayCast, gizmos: &mut Gizmos, c
 
     for i in 0..MAX_BOUNCES {
         // Cast the ray and get the first hit
-        let Some((_, hit)) = ray_cast.cast_ray(ray, &RayCastSettings::default()).first() else {
+        let Some((_, hit)) = ray_cast
+            .cast_ray(ray, &MeshRayCastSettings::default())
+            .first()
+        else {
             break;
         };
 
@@ -101,10 +104,6 @@ fn setup(
     // Camera
     commands.spawn((
         Camera3d::default(),
-        Camera {
-            hdr: true,
-            ..default()
-        },
         Transform::from_xyz(1.5, 1.5, 1.5).looking_at(Vec3::ZERO, Vec3::Y),
         Tonemapping::TonyMcMapface,
         Bloom::default(),

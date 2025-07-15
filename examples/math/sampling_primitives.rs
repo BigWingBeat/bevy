@@ -340,7 +340,6 @@ fn setup(
     commands.spawn((
         Camera3d::default(),
         Camera {
-            hdr: true, // HDR is required for bloom
             clear_color: ClearColorConfig::Custom(SKY_COLOR),
             ..default()
         },
@@ -413,7 +412,6 @@ fn setup(
 }
 
 // Handle user inputs from the keyboard:
-#[allow(clippy::too_many_arguments)]
 fn handle_keypress(
     mut commands: Commands,
     keyboard: Res<ButtonInput<KeyCode>>,
@@ -546,7 +544,6 @@ fn handle_mouse(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn spawn_points(
     mut commands: Commands,
     mode: ResMut<SamplingMode>,

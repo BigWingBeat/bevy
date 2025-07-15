@@ -13,7 +13,7 @@ use bevy::{
         },
         renderer::RenderDevice,
         texture::{FallbackImage, GpuImage},
-        RenderApp,
+        RenderApp, RenderStartup,
     },
 };
 use std::{num::NonZero, process::exit};
@@ -40,28 +40,12 @@ const TILE_ID: [usize; 16] = [
 struct GpuFeatureSupportChecker;
 
 impl Plugin for GpuFeatureSupportChecker {
-    fn build(&self, _app: &mut App) {}
-
-    fn finish(&self, app: &mut App) {
+    fn build(&self, app: &mut App) {
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
         };
 
-        let render_device = render_app.world().resource::<RenderDevice>();
-
-        // Check if the device support the required feature. If not, exit the example.
-        // In a real application, you should setup a fallback for the missing feature
-        if !render_device
-            .features()
-            .contains(WgpuFeatures::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING)
-        {
-            error!(
-                "Render device doesn't support feature \
-SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING, \
-which is required for texture binding arrays"
-            );
-            exit(1);
-        }
+        render_app.add_systems(RenderStartup, verify_required_features);
     }
 }
 
@@ -89,6 +73,22 @@ fn setup(
     ));
 }
 
+fn verify_required_features(render_device: Res<RenderDevice>) {
+    // Check if the device support the required feature. If not, exit the example. In a real
+    // application, you should setup a fallback for the missing feature
+    if !render_device
+        .features()
+        .contains(WgpuFeatures::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING)
+    {
+        error!(
+            "Render device doesn't support feature \
+SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING, \
+which is required for texture binding arrays"
+        );
+        exit(1);
+    }
+}
+
 #[derive(Asset, TypePath, Debug, Clone)]
 struct BindlessMaterial {
     textures: Vec<Handle<Image>>,
@@ -104,7 +104,7 @@ impl AsBindGroup for BindlessMaterial {
         layout: &BindGroupLayout,
         render_device: &RenderDevice,
         (image_assets, fallback_image): &mut SystemParamItem<'_, '_, Self::Param>,
-    ) -> Result<PreparedBindGroup<Self::Data>, AsBindGroupError> {
+    ) -> Result<PreparedBindGroup, AsBindGroupError> {
         // retrieve the render resources from handles
         let mut images = vec![];
         for handle in self.textures.iter().take(MAX_TEXTURE_COUNT) {
@@ -133,24 +133,28 @@ impl AsBindGroup for BindlessMaterial {
         );
 
         Ok(PreparedBindGroup {
-            bindings: vec![],
+            bindings: BindingResources(vec![]),
             bind_group,
-            data: (),
         })
     }
+
+    fn bind_group_data(&self) -> Self::Data {}
 
     fn unprepared_bind_group(
         &self,
         _layout: &BindGroupLayout,
         _render_device: &RenderDevice,
         _param: &mut SystemParamItem<'_, '_, Self::Param>,
-    ) -> Result<UnpreparedBindGroup<Self::Data>, AsBindGroupError> {
-        // we implement as_bind_group directly because
-        panic!("bindless texture arrays can't be owned")
-        // or rather, they can be owned, but then you can't make a `&'a [&'a TextureView]` from a vec of them in get_binding().
+        _force_no_bindless: bool,
+    ) -> Result<UnpreparedBindGroup, AsBindGroupError> {
+        // We implement `as_bind_group`` directly because bindless texture
+        // arrays can't be owned.
+        // Or rather, they can be owned, but then you can't make a `&'a [&'a
+        // TextureView]` from a vec of them in `get_binding()`.
+        Err(AsBindGroupError::CreateBindGroupDirectly)
     }
 
-    fn bind_group_layout_entries(_: &RenderDevice) -> Vec<BindGroupLayoutEntry>
+    fn bind_group_layout_entries(_: &RenderDevice, _: bool) -> Vec<BindGroupLayoutEntry>
     where
         Self: Sized,
     {
@@ -160,7 +164,7 @@ impl AsBindGroup for BindlessMaterial {
             (
                 // Screen texture
                 //
-                // @group(2) @binding(0) var textures: binding_array<texture_2d<f32>>;
+                // @group(3) @binding(0) var textures: binding_array<texture_2d<f32>>;
                 (
                     0,
                     texture_2d(TextureSampleType::Float { filterable: true })
@@ -168,7 +172,7 @@ impl AsBindGroup for BindlessMaterial {
                 ),
                 // Sampler
                 //
-                // @group(2) @binding(1) var nearest_sampler: sampler;
+                // @group(3) @binding(1) var nearest_sampler: sampler;
                 //
                 // Note: as with textures, multiple samplers can also be bound
                 // onto one binding slot:

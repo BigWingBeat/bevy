@@ -1,5 +1,5 @@
 use bevy_ecs::{system::Commands, world::World};
-use bevy_utils::tracing::debug;
+use log::debug;
 
 use crate::state::{FreelyMutableState, NextState};
 
@@ -21,7 +21,7 @@ impl CommandsStatesExt for Commands<'_, '_> {
             let mut next = w.resource_mut::<NextState<S>>();
             if let NextState::Pending(prev) = &*next {
                 if *prev != state {
-                    debug!("overwriting next state {:?} with {:?}", prev, state);
+                    debug!("overwriting next state {prev:?} with {state:?}");
                 }
             }
             next.set(state);

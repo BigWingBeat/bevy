@@ -1,70 +1,107 @@
-use crate::{FocusPolicy, UiRect, Val};
-use bevy_color::Color;
+use crate::{
+    ui_transform::{UiGlobalTransform, UiTransform},
+    FocusPolicy, UiRect, Val,
+};
+use bevy_color::{Alpha, Color};
+use bevy_derive::{Deref, DerefMut};
 use bevy_ecs::{prelude::*, system::SystemParam};
-use bevy_math::{vec4, Rect, Vec2, Vec4Swizzles};
+use bevy_math::{vec4, Rect, UVec2, Vec2, Vec4Swizzles};
 use bevy_reflect::prelude::*;
 use bevy_render::{
     camera::{Camera, RenderTarget},
     view::Visibility,
 };
 use bevy_sprite::BorderRect;
-use bevy_transform::components::Transform;
-use bevy_utils::warn_once;
+use bevy_utils::once;
 use bevy_window::{PrimaryWindow, WindowRef};
-use core::num::NonZero;
-use derive_more::derive::{Display, Error, From};
+use core::{f32, num::NonZero};
+use derive_more::derive::From;
 use smallvec::SmallVec;
+use thiserror::Error;
+use tracing::warn;
 
 /// Provides the computed size and layout properties of the node.
+///
+/// Fields in this struct are public but should not be modified under most circumstances.
+/// For example, in a scrollbar you may want to derive the handle's size from the proportion of
+/// scrollable content in-view. You can directly modify `ComputedNode` after layout to set the
+/// handle size without any delays.
 #[derive(Component, Debug, Copy, Clone, PartialEq, Reflect)]
-#[reflect(Component, Default, Debug)]
+#[reflect(Component, Default, Debug, Clone)]
 pub struct ComputedNode {
     /// The order of the node in the UI layout.
     /// Nodes with a higher stack index are drawn on top of and receive interactions before nodes with lower stack indices.
-    pub(crate) stack_index: u32,
-    /// The size of the node as width and height in logical pixels
     ///
-    /// automatically calculated by [`super::layout::ui_layout_system`]
-    pub(crate) size: Vec2,
+    /// Automatically calculated in [`super::UiSystems::Stack`].
+    pub stack_index: u32,
+    /// The size of the node as width and height in physical pixels.
+    ///
+    /// Automatically calculated by [`super::layout::ui_layout_system`].
+    pub size: Vec2,
+    /// Size of this node's content.
+    ///
+    /// Automatically calculated by [`super::layout::ui_layout_system`].
+    pub content_size: Vec2,
+    /// Space allocated for scrollbars.
+    ///
+    /// Automatically calculated by [`super::layout::ui_layout_system`].
+    pub scrollbar_size: Vec2,
+    /// Resolved offset of scrolled content
+    ///
+    /// Automatically calculated by [`super::layout::ui_layout_system`].
+    pub scroll_position: Vec2,
     /// The width of this node's outline.
     /// If this value is `Auto`, negative or `0.` then no outline will be rendered.
     /// Outline updates bypass change detection.
     ///
     /// Automatically calculated by [`super::layout::ui_layout_system`].
-    pub(crate) outline_width: f32,
+    pub outline_width: f32,
     /// The amount of space between the outline and the edge of the node.
     /// Outline updates bypass change detection.
     ///
     /// Automatically calculated by [`super::layout::ui_layout_system`].
-    pub(crate) outline_offset: f32,
-    /// The unrounded size of the node as width and height in logical pixels.
+    pub outline_offset: f32,
+    /// The unrounded size of the node as width and height in physical pixels.
     ///
     /// Automatically calculated by [`super::layout::ui_layout_system`].
-    pub(crate) unrounded_size: Vec2,
-    /// Resolved border values in logical pixels
+    pub unrounded_size: Vec2,
+    /// Resolved border values in physical pixels.
     /// Border updates bypass change detection.
     ///
     /// Automatically calculated by [`super::layout::ui_layout_system`].
-    pub(crate) border: BorderRect,
-    /// Resolved border radius values in logical pixels.
+    pub border: BorderRect,
+    /// Resolved border radius values in physical pixels.
     /// Border radius updates bypass change detection.
     ///
     /// Automatically calculated by [`super::layout::ui_layout_system`].
-    pub(crate) border_radius: ResolvedBorderRadius,
-    /// Resolved padding values in logical pixels
+    pub border_radius: ResolvedBorderRadius,
+    /// Resolved padding values in physical pixels.
     /// Padding updates bypass change detection.
     ///
     /// Automatically calculated by [`super::layout::ui_layout_system`].
-    pub(crate) padding: BorderRect,
+    pub padding: BorderRect,
+    /// Inverse scale factor for this Node.
+    /// Multiply physical coordinates by the inverse scale factor to give logical coordinates.
+    ///
+    /// Automatically calculated by [`super::layout::ui_layout_system`].
+    pub inverse_scale_factor: f32,
 }
 
 impl ComputedNode {
-    /// The calculated node size as width and height in logical pixels.
+    /// The calculated node size as width and height in physical pixels.
     ///
     /// Automatically calculated by [`super::layout::ui_layout_system`].
     #[inline]
     pub const fn size(&self) -> Vec2 {
         self.size
+    }
+
+    /// The calculated node content size as width and height in physical pixels.
+    ///
+    /// Automatically calculated by [`super::layout::ui_layout_system`].
+    #[inline]
+    pub const fn content_size(&self) -> Vec2 {
+        self.content_size
     }
 
     /// Check if the node is empty.
@@ -82,7 +119,7 @@ impl ComputedNode {
         self.stack_index
     }
 
-    /// The calculated node size as width and height in logical pixels before rounding.
+    /// The calculated node size as width and height in physical pixels before rounding.
     ///
     /// Automatically calculated by [`super::layout::ui_layout_system`].
     #[inline]
@@ -90,7 +127,7 @@ impl ComputedNode {
         self.unrounded_size
     }
 
-    /// Returns the thickness of the UI node's outline in logical pixels.
+    /// Returns the thickness of the UI node's outline in physical pixels.
     /// If this value is negative or `0.` then no outline will be rendered.
     ///
     /// Automatically calculated by [`super::layout::ui_layout_system`].
@@ -99,7 +136,7 @@ impl ComputedNode {
         self.outline_width
     }
 
-    /// Returns the amount of space between the outline and the edge of the node in logical pixels.
+    /// Returns the amount of space between the outline and the edge of the node in physical pixels.
     ///
     /// Automatically calculated by [`super::layout::ui_layout_system`].
     #[inline]
@@ -134,12 +171,12 @@ impl ComputedNode {
         ResolvedBorderRadius {
             top_left: compute_radius(self.border_radius.top_left, outer_distance),
             top_right: compute_radius(self.border_radius.top_right, outer_distance),
-            bottom_left: compute_radius(self.border_radius.bottom_left, outer_distance),
             bottom_right: compute_radius(self.border_radius.bottom_right, outer_distance),
+            bottom_left: compute_radius(self.border_radius.bottom_left, outer_distance),
         }
     }
 
-    /// Returns the thickness of the node's border on each edge in logical pixels.
+    /// Returns the thickness of the node's border on each edge in physical pixels.
     ///
     /// Automatically calculated by [`super::layout::ui_layout_system`].
     #[inline]
@@ -147,7 +184,7 @@ impl ComputedNode {
         self.border
     }
 
-    /// Returns the border radius for each of the node's corners in logical pixels.
+    /// Returns the border radius for each of the node's corners in physical pixels.
     ///
     /// Automatically calculated by [`super::layout::ui_layout_system`].
     #[inline]
@@ -155,7 +192,7 @@ impl ComputedNode {
         self.border_radius
     }
 
-    /// Returns the inner border radius for each of the node's corners in logical pixels.
+    /// Returns the inner border radius for each of the node's corners in physical pixels.
     pub fn inner_radius(&self) -> ResolvedBorderRadius {
         fn clamp_corner(r: f32, size: Vec2, offset: Vec2) -> f32 {
             let s = 0.5 * size + offset;
@@ -172,12 +209,12 @@ impl ComputedNode {
         ResolvedBorderRadius {
             top_left: clamp_corner(self.border_radius.top_left, s, b.xy()),
             top_right: clamp_corner(self.border_radius.top_right, s, b.zy()),
-            bottom_left: clamp_corner(self.border_radius.bottom_right, s, b.zw()),
             bottom_right: clamp_corner(self.border_radius.bottom_left, s, b.xw()),
+            bottom_left: clamp_corner(self.border_radius.bottom_right, s, b.zw()),
         }
     }
 
-    /// Returns the thickness of the node's padding on each edge in logical pixels.
+    /// Returns the thickness of the node's padding on each edge in physical pixels.
     ///
     /// Automatically calculated by [`super::layout::ui_layout_system`].
     #[inline]
@@ -185,7 +222,7 @@ impl ComputedNode {
         self.padding
     }
 
-    /// Returns the combined inset on each edge including both padding and border thickness in logical pixels.
+    /// Returns the combined inset on each edge including both padding and border thickness in physical pixels.
     #[inline]
     pub const fn content_inset(&self) -> BorderRect {
         BorderRect {
@@ -195,18 +232,96 @@ impl ComputedNode {
             bottom: self.border.bottom + self.padding.bottom,
         }
     }
+
+    /// Returns the inverse of the scale factor for this node.
+    /// To convert from physical coordinates to logical coordinates multiply by this value.
+    #[inline]
+    pub const fn inverse_scale_factor(&self) -> f32 {
+        self.inverse_scale_factor
+    }
+
+    // Returns true if `point` within the node.
+    //
+    // Matches the sdf function in `ui.wgsl` that is used by the UI renderer to draw rounded rectangles.
+    pub fn contains_point(&self, transform: UiGlobalTransform, point: Vec2) -> bool {
+        let Some(local_point) = transform
+            .try_inverse()
+            .map(|transform| transform.transform_point2(point))
+        else {
+            return false;
+        };
+        let [top, bottom] = if local_point.x < 0. {
+            [self.border_radius.top_left, self.border_radius.bottom_left]
+        } else {
+            [
+                self.border_radius.top_right,
+                self.border_radius.bottom_right,
+            ]
+        };
+        let r = if local_point.y < 0. { top } else { bottom };
+        let corner_to_point = local_point.abs() - 0.5 * self.size;
+        let q = corner_to_point + r;
+        let l = q.max(Vec2::ZERO).length();
+        let m = q.max_element().min(0.);
+        l + m - r < 0.
+    }
+
+    /// Transform a point to normalized node space with the center of the node at the origin and the corners at [+/-0.5, +/-0.5]
+    pub fn normalize_point(&self, transform: UiGlobalTransform, point: Vec2) -> Option<Vec2> {
+        self.size
+            .cmpgt(Vec2::ZERO)
+            .all()
+            .then(|| transform.try_inverse())
+            .flatten()
+            .map(|transform| transform.transform_point2(point) / self.size)
+    }
+
+    /// Resolve the node's clipping rect in local space
+    pub fn resolve_clip_rect(
+        &self,
+        overflow: Overflow,
+        overflow_clip_margin: OverflowClipMargin,
+    ) -> Rect {
+        let mut clip_rect = Rect::from_center_size(Vec2::ZERO, self.size);
+
+        let clip_inset = match overflow_clip_margin.visual_box {
+            OverflowClipBox::BorderBox => BorderRect::ZERO,
+            OverflowClipBox::ContentBox => self.content_inset(),
+            OverflowClipBox::PaddingBox => self.border(),
+        };
+
+        clip_rect.min.x += clip_inset.left;
+        clip_rect.min.y += clip_inset.top;
+        clip_rect.max.x -= clip_inset.right;
+        clip_rect.max.y -= clip_inset.bottom;
+
+        if overflow.x == OverflowAxis::Visible {
+            clip_rect.min.x = -f32::INFINITY;
+            clip_rect.max.x = f32::INFINITY;
+        }
+        if overflow.y == OverflowAxis::Visible {
+            clip_rect.min.y = -f32::INFINITY;
+            clip_rect.max.y = f32::INFINITY;
+        }
+
+        clip_rect
+    }
 }
 
 impl ComputedNode {
     pub const DEFAULT: Self = Self {
         stack_index: 0,
         size: Vec2::ZERO,
+        content_size: Vec2::ZERO,
+        scrollbar_size: Vec2::ZERO,
+        scroll_position: Vec2::ZERO,
         outline_width: 0.,
         outline_offset: 0.,
         unrounded_size: Vec2::ZERO,
         border_radius: ResolvedBorderRadius::ZERO,
         border: BorderRect::ZERO,
         padding: BorderRect::ZERO,
+        inverse_scale_factor: 1.,
     };
 }
 
@@ -216,45 +331,27 @@ impl Default for ComputedNode {
     }
 }
 
-/// The scroll position of the node.
+/// The scroll position of the node. Values are in logical pixels, increasing from top-left to bottom-right.
 ///
-/// Updating the values of `ScrollPosition` will reposition the children of the node by the offset amount.
+/// Increasing the x-coordinate causes the scrolled content to visibly move left on the screen, while increasing the y-coordinate causes the scrolled content to move up.
+/// This might seem backwards, however what's really happening is that
+/// the scroll position is moving the visible "window" in the local coordinate system of the scrolled content -
+/// moving the window down causes the content to move up.
+///
+/// Updating the values of `ScrollPosition` will reposition the children of the node by the offset amount in logical pixels.
 /// `ScrollPosition` may be updated by the layout system when a layout change makes a previously valid `ScrollPosition` invalid.
 /// Changing this does nothing on a `Node` without setting at least one `OverflowAxis` to `OverflowAxis::Scroll`.
-#[derive(Component, Debug, Clone, Reflect)]
-#[reflect(Component, Default)]
-pub struct ScrollPosition {
-    /// How far across the node is scrolled, in pixels. (0 = not scrolled / scrolled to right)
-    pub offset_x: f32,
-    /// How far down the node is scrolled, in pixels. (0 = not scrolled / scrolled to top)
-    pub offset_y: f32,
-}
+#[derive(Component, Debug, Clone, Default, Deref, DerefMut, Reflect)]
+#[reflect(Component, Default, Clone)]
+pub struct ScrollPosition(pub Vec2);
 
 impl ScrollPosition {
-    pub const DEFAULT: Self = Self {
-        offset_x: 0.0,
-        offset_y: 0.0,
-    };
+    pub const DEFAULT: Self = Self(Vec2::ZERO);
 }
 
-impl Default for ScrollPosition {
-    fn default() -> Self {
-        Self::DEFAULT
-    }
-}
-
-impl From<&ScrollPosition> for Vec2 {
-    fn from(scroll_pos: &ScrollPosition) -> Self {
-        Vec2::new(scroll_pos.offset_x, scroll_pos.offset_y)
-    }
-}
-
-impl From<&Vec2> for ScrollPosition {
-    fn from(vec: &Vec2) -> Self {
-        ScrollPosition {
-            offset_x: vec.x,
-            offset_y: vec.y,
-        }
+impl From<Vec2> for ScrollPosition {
+    fn from(value: Vec2) -> Self {
+        Self(value)
     }
 }
 
@@ -286,16 +383,17 @@ impl From<&Vec2> for ScrollPosition {
 #[derive(Component, Clone, PartialEq, Debug, Reflect)]
 #[require(
     ComputedNode,
+    ComputedNodeTarget,
+    UiTransform,
     BackgroundColor,
     BorderColor,
     BorderRadius,
     FocusPolicy,
     ScrollPosition,
-    Transform,
     Visibility,
     ZIndex
 )]
-#[reflect(Component, Default, PartialEq, Debug)]
+#[reflect(Component, Default, PartialEq, Debug, Clone)]
 #[cfg_attr(
     feature = "serialize",
     derive(serde::Serialize, serde::Deserialize),
@@ -310,6 +408,15 @@ pub struct Node {
     /// <https://developer.mozilla.org/en-US/docs/Web/CSS/display>
     pub display: Display,
 
+    /// Which part of a Node's box length styles like width and height control
+    ///   - [`BoxSizing::BorderBox`]: They refer to the "border box" size (size including padding and border)
+    ///   - [`BoxSizing::ContentBox`]: They refer to the "content box" size (size excluding padding and border)
+    ///
+    /// `BoxSizing::BorderBox` is generally considered more intuitive and is the default in Bevy even though it is not on the web.
+    ///
+    /// See: <https://developer.mozilla.org/en-US/docs/Web/CSS/box-sizing>
+    pub box_sizing: BoxSizing,
+
     /// Whether a node should be laid out in-flow with, or independently of its siblings:
     ///  - [`PositionType::Relative`]: Layout this node in-flow with other nodes using the usual (flexbox/grid) layout algorithm.
     ///  - [`PositionType::Absolute`]: Layout this node on top and independently of other nodes.
@@ -321,6 +428,9 @@ pub struct Node {
     ///
     /// <https://developer.mozilla.org/en-US/docs/Web/CSS/overflow>
     pub overflow: Overflow,
+
+    /// How much space in logical pixels should be reserved for scrollbars when overflow is set to scroll or auto on an axis.
+    pub scrollbar_width: f32,
 
     /// How the bounds of clipped content should be determined
     ///
@@ -515,7 +625,7 @@ pub struct Node {
 
     /// The initial length of a flexbox in the main axis, before flex growing/shrinking properties are applied.
     ///
-    /// `flex_basis` overrides `size` on the main axis if both are set, but it obeys the bounds defined by `min_size` and `max_size`.
+    /// `flex_basis` overrides `width` (if the main axis is horizontal) or `height` (if the main axis is vertical) when both are set, but it obeys the constraints defined by `min_width`/`min_height` and `max_width`/`max_height`.
     ///
     /// <https://developer.mozilla.org/en-US/docs/Web/CSS/flex-basis>
     pub flex_basis: Val,
@@ -577,6 +687,7 @@ pub struct Node {
 impl Node {
     pub const DEFAULT: Self = Self {
         display: Display::DEFAULT,
+        box_sizing: BoxSizing::DEFAULT,
         position_type: PositionType::DEFAULT,
         left: Val::Auto,
         right: Val::Auto,
@@ -605,6 +716,7 @@ impl Node {
         aspect_ratio: None,
         overflow: Overflow::DEFAULT,
         overflow_clip_margin: OverflowClipMargin::DEFAULT,
+        scrollbar_width: 0.,
         row_gap: Val::ZERO,
         column_gap: Val::ZERO,
         grid_auto_flow: GridAutoFlow::DEFAULT,
@@ -629,7 +741,7 @@ impl Default for Node {
 ///
 /// <https://developer.mozilla.org/en-US/docs/Web/CSS/align-items>
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Reflect)]
-#[reflect(Default, PartialEq)]
+#[reflect(Default, PartialEq, Clone)]
 #[cfg_attr(
     feature = "serialize",
     derive(serde::Serialize, serde::Deserialize),
@@ -672,7 +784,7 @@ impl Default for AlignItems {
 ///
 /// <https://developer.mozilla.org/en-US/docs/Web/CSS/justify-items>
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Reflect)]
-#[reflect(Default, PartialEq)]
+#[reflect(Default, PartialEq, Clone)]
 #[cfg_attr(
     feature = "serialize",
     derive(serde::Serialize, serde::Deserialize),
@@ -709,7 +821,7 @@ impl Default for JustifyItems {
 ///
 /// <https://developer.mozilla.org/en-US/docs/Web/CSS/align-self>
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Reflect)]
-#[reflect(Default, PartialEq)]
+#[reflect(Default, PartialEq, Clone)]
 #[cfg_attr(
     feature = "serialize",
     derive(serde::Serialize, serde::Deserialize),
@@ -752,7 +864,7 @@ impl Default for AlignSelf {
 ///
 /// <https://developer.mozilla.org/en-US/docs/Web/CSS/justify-self>
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Reflect)]
-#[reflect(Default, PartialEq)]
+#[reflect(Default, PartialEq, Clone)]
 #[cfg_attr(
     feature = "serialize",
     derive(serde::Serialize, serde::Deserialize),
@@ -789,7 +901,7 @@ impl Default for JustifySelf {
 ///
 /// <https://developer.mozilla.org/en-US/docs/Web/CSS/align-content>
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Reflect)]
-#[reflect(Default, PartialEq)]
+#[reflect(Default, PartialEq, Clone)]
 #[cfg_attr(
     feature = "serialize",
     derive(serde::Serialize, serde::Deserialize),
@@ -836,7 +948,7 @@ impl Default for AlignContent {
 ///
 /// <https://developer.mozilla.org/en-US/docs/Web/CSS/justify-content>
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Reflect)]
-#[reflect(Default, PartialEq)]
+#[reflect(Default, PartialEq, Clone)]
 #[cfg_attr(
     feature = "serialize",
     derive(serde::Serialize, serde::Deserialize),
@@ -881,7 +993,7 @@ impl Default for JustifyContent {
 ///
 /// Part of the [`Node`] component.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Reflect)]
-#[reflect(Default, PartialEq)]
+#[reflect(Default, PartialEq, Clone)]
 #[cfg_attr(
     feature = "serialize",
     derive(serde::Serialize, serde::Deserialize),
@@ -911,9 +1023,36 @@ impl Default for Display {
     }
 }
 
+/// Which part of a Node's box length styles like width and height control
+///
+/// See: <https://developer.mozilla.org/en-US/docs/Web/CSS/box-sizing>
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Reflect)]
+#[reflect(Default, PartialEq, Clone)]
+#[cfg_attr(
+    feature = "serialize",
+    derive(serde::Serialize, serde::Deserialize),
+    reflect(Serialize, Deserialize)
+)]
+pub enum BoxSizing {
+    /// Length styles like width and height refer to the "border box" size (size including padding and border)
+    BorderBox,
+    /// Length styles like width and height refer to the "content box" size (size excluding padding and border)
+    ContentBox,
+}
+
+impl BoxSizing {
+    pub const DEFAULT: Self = Self::BorderBox;
+}
+
+impl Default for BoxSizing {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
 /// Defines how flexbox items are ordered within a flexbox
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Reflect)]
-#[reflect(Default, PartialEq)]
+#[reflect(Default, PartialEq, Clone)]
 #[cfg_attr(
     feature = "serialize",
     derive(serde::Serialize, serde::Deserialize),
@@ -942,7 +1081,7 @@ impl Default for FlexDirection {
 
 /// Whether to show or hide overflowing items
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Reflect)]
-#[reflect(Default, PartialEq)]
+#[reflect(Default, PartialEq, Clone)]
 #[cfg_attr(
     feature = "serialize",
     derive(serde::Serialize, serde::Deserialize),
@@ -993,6 +1132,30 @@ impl Overflow {
         }
     }
 
+    /// Hide overflowing items on both axes by influencing layout and then clipping
+    pub const fn hidden() -> Self {
+        Self {
+            x: OverflowAxis::Hidden,
+            y: OverflowAxis::Hidden,
+        }
+    }
+
+    /// Hide overflowing items on the x axis by influencing layout and then clipping
+    pub const fn hidden_x() -> Self {
+        Self {
+            x: OverflowAxis::Hidden,
+            y: OverflowAxis::Visible,
+        }
+    }
+
+    /// Hide overflowing items on the y axis by influencing layout and then clipping
+    pub const fn hidden_y() -> Self {
+        Self {
+            x: OverflowAxis::Visible,
+            y: OverflowAxis::Hidden,
+        }
+    }
+
     /// Overflow is visible on both axes
     pub const fn is_visible(&self) -> bool {
         self.x.is_visible() && self.y.is_visible()
@@ -1030,7 +1193,7 @@ impl Default for Overflow {
 
 /// Whether to show or hide overflowing items
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Reflect)]
-#[reflect(Default, PartialEq)]
+#[reflect(Default, PartialEq, Clone)]
 #[cfg_attr(
     feature = "serialize",
     derive(serde::Serialize, serde::Deserialize),
@@ -1064,7 +1227,7 @@ impl Default for OverflowAxis {
 
 /// The bounds of the visible area when a UI node is clipped.
 #[derive(Default, Copy, Clone, PartialEq, Debug, Reflect)]
-#[reflect(Default, PartialEq)]
+#[reflect(Default, PartialEq, Clone)]
 #[cfg_attr(
     feature = "serialize",
     derive(serde::Serialize, serde::Deserialize),
@@ -1080,7 +1243,7 @@ pub struct OverflowClipMargin {
 
 impl OverflowClipMargin {
     pub const DEFAULT: Self = Self {
-        visual_box: OverflowClipBox::ContentBox,
+        visual_box: OverflowClipBox::PaddingBox,
         margin: 0.,
     };
 
@@ -1118,7 +1281,7 @@ impl OverflowClipMargin {
 
 /// Used to determine the bounds of the visible area when a UI node is clipped.
 #[derive(Default, Copy, Clone, PartialEq, Eq, Debug, Reflect)]
-#[reflect(Default, PartialEq)]
+#[reflect(Default, PartialEq, Clone)]
 #[cfg_attr(
     feature = "serialize",
     derive(serde::Serialize, serde::Deserialize),
@@ -1126,9 +1289,9 @@ impl OverflowClipMargin {
 )]
 pub enum OverflowClipBox {
     /// Clip any content that overflows outside the content box
-    #[default]
     ContentBox,
     /// Clip any content that overflows outside the padding box
+    #[default]
     PaddingBox,
     /// Clip any content that overflows outside the border box
     BorderBox,
@@ -1136,7 +1299,7 @@ pub enum OverflowClipBox {
 
 /// The strategy used to position this node
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Reflect)]
-#[reflect(Default, PartialEq)]
+#[reflect(Default, PartialEq, Clone)]
 #[cfg_attr(
     feature = "serialize",
     derive(serde::Serialize, serde::Deserialize),
@@ -1161,7 +1324,7 @@ impl Default for PositionType {
 
 /// Defines if flexbox items appear on a single line or on multiple lines
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Reflect)]
-#[reflect(Default, PartialEq)]
+#[reflect(Default, PartialEq, Clone)]
 #[cfg_attr(
     feature = "serialize",
     derive(serde::Serialize, serde::Deserialize),
@@ -1195,7 +1358,7 @@ impl Default for FlexWrap {
 ///
 /// <https://developer.mozilla.org/en-US/docs/Web/CSS/grid-auto-flow>
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Reflect)]
-#[reflect(Default, PartialEq)]
+#[reflect(Default, PartialEq, Clone)]
 #[cfg_attr(
     feature = "serialize",
     derive(serde::Serialize, serde::Deserialize),
@@ -1223,7 +1386,7 @@ impl Default for GridAutoFlow {
 }
 
 #[derive(Default, Copy, Clone, PartialEq, Debug, Reflect)]
-#[reflect(Default, PartialEq)]
+#[reflect(Default, PartialEq, Clone)]
 #[cfg_attr(
     feature = "serialize",
     derive(serde::Serialize, serde::Deserialize),
@@ -1252,7 +1415,7 @@ pub enum MinTrackSizingFunction {
 }
 
 #[derive(Default, Copy, Clone, PartialEq, Debug, Reflect)]
-#[reflect(Default, PartialEq)]
+#[reflect(Default, PartialEq, Clone)]
 #[cfg_attr(
     feature = "serialize",
     derive(serde::Serialize, serde::Deserialize),
@@ -1292,7 +1455,7 @@ pub enum MaxTrackSizingFunction {
 /// A [`GridTrack`] is a Row or Column of a CSS Grid. This struct specifies what size the track should be.
 /// See below for the different "track sizing functions" you can specify.
 #[derive(Copy, Clone, PartialEq, Debug, Reflect)]
-#[reflect(Default, PartialEq)]
+#[reflect(Default, PartialEq, Clone)]
 #[cfg_attr(
     feature = "serialize",
     derive(serde::Serialize, serde::Deserialize),
@@ -1451,7 +1614,7 @@ impl Default for GridTrack {
 }
 
 #[derive(Copy, Clone, PartialEq, Debug, Reflect, From)]
-#[reflect(Default, PartialEq)]
+#[reflect(Default, PartialEq, Clone)]
 #[cfg_attr(
     feature = "serialize",
     derive(serde::Serialize, serde::Deserialize),
@@ -1506,7 +1669,7 @@ impl From<usize> for GridTrackRepetition {
 /// then all tracks (in and outside of the repetition) must be fixed size (px or percent). Integer repetitions are just shorthand for writing out
 /// N tracks longhand and are not subject to the same limitations.
 #[derive(Clone, PartialEq, Debug, Reflect)]
-#[reflect(Default, PartialEq)]
+#[reflect(Default, PartialEq, Clone)]
 #[cfg_attr(
     feature = "serialize",
     derive(serde::Serialize, serde::Deserialize),
@@ -1703,7 +1866,7 @@ impl From<RepeatedGridTrack> for Vec<RepeatedGridTrack> {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Reflect)]
-#[reflect(Default, PartialEq)]
+#[reflect(Default, PartialEq, Clone)]
 #[cfg_attr(
     feature = "serialize",
     derive(serde::Serialize, serde::Deserialize),
@@ -1739,11 +1902,9 @@ pub struct GridPlacement {
 }
 
 impl GridPlacement {
-    #[allow(unsafe_code)]
     pub const DEFAULT: Self = Self {
         start: None,
-        // SAFETY: This is trivially safe as 1 is non-zero.
-        span: Some(unsafe { NonZero::<u16>::new_unchecked(1) }),
+        span: NonZero::<u16>::new(1),
         end: None,
     };
 
@@ -1895,11 +2056,11 @@ fn try_into_grid_span(span: u16) -> Result<Option<NonZero<u16>>, GridPlacementEr
 }
 
 /// Errors that occur when setting constraints for a `GridPlacement`
-#[derive(Debug, Eq, PartialEq, Clone, Copy, Error, Display)]
+#[derive(Debug, Eq, PartialEq, Clone, Copy, Error)]
 pub enum GridPlacementError {
-    #[display("Zero is not a valid grid position")]
+    #[error("Zero is not a valid grid position")]
     InvalidZeroIndex,
-    #[display("Spans cannot be zero length")]
+    #[error("Spans cannot be zero length")]
     InvalidZeroSpan,
 }
 
@@ -1907,7 +2068,7 @@ pub enum GridPlacementError {
 ///
 /// This serves as the "fill" color.
 #[derive(Component, Copy, Clone, Debug, PartialEq, Reflect)]
-#[reflect(Component, Default, Debug, PartialEq)]
+#[reflect(Component, Default, Debug, PartialEq, Clone)]
 #[cfg_attr(
     feature = "serialize",
     derive(serde::Serialize, serde::Deserialize),
@@ -1934,23 +2095,56 @@ impl<T: Into<Color>> From<T> for BackgroundColor {
 
 /// The border color of the UI node.
 #[derive(Component, Copy, Clone, Debug, PartialEq, Reflect)]
-#[reflect(Component, Default, Debug, PartialEq)]
+#[reflect(Component, Default, Debug, PartialEq, Clone)]
 #[cfg_attr(
     feature = "serialize",
     derive(serde::Serialize, serde::Deserialize),
     reflect(Serialize, Deserialize)
 )]
-pub struct BorderColor(pub Color);
+pub struct BorderColor {
+    pub top: Color,
+    pub right: Color,
+    pub bottom: Color,
+    pub left: Color,
+}
 
 impl<T: Into<Color>> From<T> for BorderColor {
     fn from(color: T) -> Self {
-        Self(color.into())
+        Self::all(color.into())
     }
 }
 
 impl BorderColor {
     /// Border color is transparent by default.
-    pub const DEFAULT: Self = BorderColor(Color::NONE);
+    pub const DEFAULT: Self = BorderColor::all(Color::NONE);
+
+    /// Helper to create a `BorderColor` struct with all borders set to the given color
+    pub const fn all(color: Color) -> Self {
+        Self {
+            top: color,
+            bottom: color,
+            left: color,
+            right: color,
+        }
+    }
+
+    /// Helper to set all border colors to a given color.
+    pub fn set_all(&mut self, color: impl Into<Color>) -> &mut Self {
+        let color: Color = color.into();
+        self.top = color;
+        self.bottom = color;
+        self.left = color;
+        self.right = color;
+        self
+    }
+
+    /// Check if all contained border colors are transparent
+    pub fn is_fully_transparent(&self) -> bool {
+        self.top.is_fully_transparent()
+            && self.bottom.is_fully_transparent()
+            && self.left.is_fully_transparent()
+            && self.right.is_fully_transparent()
+    }
 }
 
 impl Default for BorderColor {
@@ -1960,7 +2154,7 @@ impl Default for BorderColor {
 }
 
 #[derive(Component, Copy, Clone, Default, Debug, PartialEq, Reflect)]
-#[reflect(Component, Default, Debug, PartialEq)]
+#[reflect(Component, Default, Debug, PartialEq, Clone)]
 #[cfg_attr(
     feature = "serialize",
     derive(serde::Serialize, serde::Deserialize),
@@ -2042,23 +2236,31 @@ impl Outline {
 
 /// The calculated clip of the node
 #[derive(Component, Default, Copy, Clone, Debug, Reflect)]
-#[reflect(Component, Default, Debug)]
+#[reflect(Component, Default, Debug, Clone)]
 pub struct CalculatedClip {
     /// The rect of the clip
     pub clip: Rect,
 }
 
+/// UI node entities with this component will ignore any clipping rect they inherit,
+/// the node will not be clipped regardless of its ancestors' `Overflow` setting.
+#[derive(Component)]
+pub struct OverrideClip;
+
 /// Indicates that this [`Node`] entity's front-to-back ordering is not controlled solely
 /// by its location in the UI hierarchy. A node with a higher z-index will appear on top
-/// of other nodes with a lower z-index.
+/// of sibling nodes with a lower z-index.
 ///
 /// UI nodes that have the same z-index will appear according to the order in which they
 /// appear in the UI hierarchy. In such a case, the last node to be added to its parent
 /// will appear in front of its siblings.
 ///
 /// Nodes without this component will be treated as if they had a value of [`ZIndex(0)`].
+///
+/// Use [`GlobalZIndex`] if you need to order separate UI hierarchies or nodes that are
+/// not siblings in a given UI hierarchy.
 #[derive(Component, Copy, Clone, Debug, Default, PartialEq, Eq, Reflect)]
-#[reflect(Component, Default, Debug, PartialEq)]
+#[reflect(Component, Default, Debug, PartialEq, Clone)]
 pub struct ZIndex(pub i32);
 
 /// `GlobalZIndex` allows a [`Node`] entity anywhere in the UI hierarchy to escape the implicit draw ordering of the UI's layout tree and
@@ -2068,7 +2270,7 @@ pub struct ZIndex(pub i32);
 ///
 /// If two Nodes have the same `GlobalZIndex`, the node with the greater [`ZIndex`] will be drawn on top.
 #[derive(Component, Copy, Clone, Debug, Default, PartialEq, Eq, Reflect)]
-#[reflect(Component, Default, Debug, PartialEq)]
+#[reflect(Component, Default, Debug, PartialEq, Clone)]
 pub struct GlobalZIndex(pub i32);
 
 /// Used to add rounded corners to a UI node. You can set a UI node to have uniformly
@@ -2109,7 +2311,7 @@ pub struct GlobalZIndex(pub i32);
 ///
 /// <https://developer.mozilla.org/en-US/docs/Web/CSS/border-radius>
 #[derive(Component, Copy, Clone, Debug, PartialEq, Reflect)]
-#[reflect(Component, PartialEq, Default, Debug)]
+#[reflect(Component, PartialEq, Default, Debug, Clone)]
 #[cfg_attr(
     feature = "serialize",
     derive(serde::Serialize, serde::Deserialize),
@@ -2118,8 +2320,8 @@ pub struct GlobalZIndex(pub i32);
 pub struct BorderRadius {
     pub top_left: Val,
     pub top_right: Val,
-    pub bottom_left: Val,
     pub bottom_right: Val,
+    pub bottom_left: Val,
 }
 
 impl Default for BorderRadius {
@@ -2178,10 +2380,10 @@ impl BorderRadius {
         bottom_left: f32,
     ) -> Self {
         Self {
-            top_left: Val::Px(top_left),
-            top_right: Val::Px(top_right),
-            bottom_right: Val::Px(bottom_right),
-            bottom_left: Val::Px(bottom_left),
+            top_left: Val::Percent(top_left),
+            top_right: Val::Percent(top_right),
+            bottom_right: Val::Percent(bottom_right),
+            bottom_left: Val::Percent(bottom_left),
         }
     }
 
@@ -2329,58 +2531,136 @@ impl BorderRadius {
         self
     }
 
-    /// Compute the logical border radius for a single corner from the given values
-    pub fn resolve_single_corner(radius: Val, node_size: Vec2, viewport_size: Vec2) -> f32 {
-        match radius {
-            Val::Auto => 0.,
-            Val::Px(px) => px,
-            Val::Percent(percent) => node_size.min_element() * percent / 100.,
-            Val::Vw(percent) => viewport_size.x * percent / 100.,
-            Val::Vh(percent) => viewport_size.y * percent / 100.,
-            Val::VMin(percent) => viewport_size.min_element() * percent / 100.,
-            Val::VMax(percent) => viewport_size.max_element() * percent / 100.,
+    /// Resolve the border radius for a single corner from the given context values.
+    /// Returns the radius of the corner in physical pixels.
+    pub const fn resolve_single_corner(
+        radius: Val,
+        scale_factor: f32,
+        min_length: f32,
+        viewport_size: Vec2,
+    ) -> f32 {
+        if let Ok(radius) = radius.resolve(scale_factor, min_length, viewport_size) {
+            radius.clamp(0., 0.5 * min_length)
+        } else {
+            0.
         }
-        .clamp(0., 0.5 * node_size.min_element())
     }
 
-    pub fn resolve(&self, node_size: Vec2, viewport_size: Vec2) -> ResolvedBorderRadius {
+    /// Resolve the border radii for the corners from the given context values.
+    /// Returns the radii of the each corner in physical pixels.
+    pub const fn resolve(
+        &self,
+        scale_factor: f32,
+        node_size: Vec2,
+        viewport_size: Vec2,
+    ) -> ResolvedBorderRadius {
+        let length = node_size.x.min(node_size.y);
         ResolvedBorderRadius {
-            top_left: Self::resolve_single_corner(self.top_left, node_size, viewport_size),
-            top_right: Self::resolve_single_corner(self.top_right, node_size, viewport_size),
-            bottom_left: Self::resolve_single_corner(self.bottom_left, node_size, viewport_size),
-            bottom_right: Self::resolve_single_corner(self.bottom_right, node_size, viewport_size),
+            top_left: Self::resolve_single_corner(
+                self.top_left,
+                scale_factor,
+                length,
+                viewport_size,
+            ),
+            top_right: Self::resolve_single_corner(
+                self.top_right,
+                scale_factor,
+                length,
+                viewport_size,
+            ),
+            bottom_left: Self::resolve_single_corner(
+                self.bottom_left,
+                scale_factor,
+                length,
+                viewport_size,
+            ),
+            bottom_right: Self::resolve_single_corner(
+                self.bottom_right,
+                scale_factor,
+                length,
+                viewport_size,
+            ),
         }
     }
 }
 
 /// Represents the resolved border radius values for a UI node.
 ///
-/// The values are in logical pixels.
+/// The values are in physical pixels.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Reflect)]
+#[reflect(Clone, PartialEq, Default)]
 pub struct ResolvedBorderRadius {
     pub top_left: f32,
     pub top_right: f32,
-    pub bottom_left: f32,
     pub bottom_right: f32,
+    pub bottom_left: f32,
 }
 
 impl ResolvedBorderRadius {
     pub const ZERO: Self = Self {
         top_left: 0.,
         top_right: 0.,
-        bottom_left: 0.,
         bottom_right: 0.,
+        bottom_left: 0.,
     };
 }
 
-#[derive(Component, Copy, Clone, Debug, PartialEq, Reflect)]
-#[reflect(Component, PartialEq, Default)]
+impl From<ResolvedBorderRadius> for [f32; 4] {
+    fn from(radius: ResolvedBorderRadius) -> Self {
+        [
+            radius.top_left,
+            radius.top_right,
+            radius.bottom_right,
+            radius.bottom_left,
+        ]
+    }
+}
+
+#[derive(Component, Clone, Debug, Default, PartialEq, Reflect, Deref, DerefMut)]
+#[reflect(Component, PartialEq, Default, Clone)]
 #[cfg_attr(
     feature = "serialize",
     derive(serde::Serialize, serde::Deserialize),
     reflect(Serialize, Deserialize)
 )]
-pub struct BoxShadow {
+/// List of shadows to draw for a [`Node`].
+///
+/// Draw order is determined implicitly from the vector of [`ShadowStyle`]s, back-to-front.
+pub struct BoxShadow(pub Vec<ShadowStyle>);
+
+impl BoxShadow {
+    /// A single drop shadow
+    pub fn new(
+        color: Color,
+        x_offset: Val,
+        y_offset: Val,
+        spread_radius: Val,
+        blur_radius: Val,
+    ) -> Self {
+        Self(vec![ShadowStyle {
+            color,
+            x_offset,
+            y_offset,
+            spread_radius,
+            blur_radius,
+        }])
+    }
+}
+
+impl From<ShadowStyle> for BoxShadow {
+    fn from(value: ShadowStyle) -> Self {
+        Self(vec![value])
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Reflect)]
+#[reflect(PartialEq, Default, Clone)]
+#[cfg_attr(
+    feature = "serialize",
+    derive(serde::Serialize, serde::Deserialize),
+    reflect(Serialize, Deserialize)
+)]
+pub struct ShadowStyle {
     /// The shadow's color
     pub color: Color,
     /// Horizontal offset
@@ -2396,7 +2676,7 @@ pub struct BoxShadow {
     pub blur_radius: Val,
 }
 
-impl Default for BoxShadow {
+impl Default for ShadowStyle {
     fn default() -> Self {
         Self {
             color: Color::BLACK,
@@ -2405,6 +2685,151 @@ impl Default for BoxShadow {
             spread_radius: Val::ZERO,
             blur_radius: Val::Percent(10.),
         }
+    }
+}
+
+#[derive(Component, Copy, Clone, Debug, PartialEq, Reflect)]
+#[reflect(Component, Debug, PartialEq, Default, Clone)]
+#[cfg_attr(
+    feature = "serialize",
+    derive(serde::Serialize, serde::Deserialize),
+    reflect(Serialize, Deserialize)
+)]
+/// This component can be added to any UI node to modify its layout behavior.
+pub struct LayoutConfig {
+    /// If set to true the coordinates for this node and its descendents will be rounded to the nearest physical pixel.
+    /// This can help prevent visual artifacts like blurry images or semi-transparent edges that can occur with sub-pixel positioning.
+    ///
+    /// Defaults to true.
+    pub use_rounding: bool,
+}
+
+impl Default for LayoutConfig {
+    fn default() -> Self {
+        Self { use_rounding: true }
+    }
+}
+
+/// Indicates that this root [`Node`] entity should be rendered to a specific camera.
+///
+/// UI then will be laid out respecting the camera's viewport and scale factor, and
+/// rendered to this camera's [`bevy_render::camera::RenderTarget`].
+///
+/// Setting this component on a non-root node will have no effect. It will be overridden
+/// by the root node's component.
+///
+/// Root node's without an explicit [`UiTargetCamera`] will be rendered to the default UI camera,
+/// which is either a single camera with the [`IsDefaultUiCamera`] marker component or the highest
+/// order camera targeting the primary window.
+#[derive(Component, Clone, Debug, Reflect, Eq, PartialEq)]
+#[reflect(Component, Debug, PartialEq, Clone)]
+pub struct UiTargetCamera(pub Entity);
+
+impl UiTargetCamera {
+    pub fn entity(&self) -> Entity {
+        self.0
+    }
+}
+
+/// Marker used to identify default cameras, they will have priority over the [`PrimaryWindow`] camera.
+///
+/// This is useful if the [`PrimaryWindow`] has two cameras, one of them used
+/// just for debug purposes and the user wants a way to choose the default [`Camera`]
+/// without having to add a [`UiTargetCamera`] to the root node.
+///
+/// Another use is when the user wants the Ui to be in another window by default,
+/// all that is needed is to place this component on the camera
+///
+/// ```
+/// # use bevy_ui::prelude::*;
+/// # use bevy_ecs::prelude::Commands;
+/// # use bevy_render::camera::{Camera, RenderTarget};
+/// # use bevy_core_pipeline::prelude::Camera2d;
+/// # use bevy_window::{Window, WindowRef};
+///
+/// fn spawn_camera(mut commands: Commands) {
+///     let another_window = commands.spawn(Window {
+///         title: String::from("Another window"),
+///         ..Default::default()
+///     }).id();
+///     commands.spawn((
+///         Camera2d,
+///         Camera {
+///             target: RenderTarget::Window(WindowRef::Entity(another_window)),
+///             ..Default::default()
+///         },
+///         // We add the Marker here so all Ui will spawn in
+///         // another window if no UiTargetCamera is specified
+///         IsDefaultUiCamera
+///     ));
+/// }
+/// ```
+#[derive(Component, Default)]
+pub struct IsDefaultUiCamera;
+
+#[derive(SystemParam)]
+pub struct DefaultUiCamera<'w, 's> {
+    cameras: Query<'w, 's, (Entity, &'static Camera)>,
+    default_cameras: Query<'w, 's, Entity, (With<Camera>, With<IsDefaultUiCamera>)>,
+    primary_window: Query<'w, 's, Entity, With<PrimaryWindow>>,
+}
+
+impl<'w, 's> DefaultUiCamera<'w, 's> {
+    pub fn get(&self) -> Option<Entity> {
+        self.default_cameras.single().ok().or_else(|| {
+            // If there isn't a single camera and the query isn't empty, there is two or more cameras queried.
+            if !self.default_cameras.is_empty() {
+                once!(warn!("Two or more Entities with IsDefaultUiCamera found when only one Camera with this marker is allowed."));
+            }
+            self.cameras
+                .iter()
+                .filter(|(_, c)| match c.target {
+                    RenderTarget::Window(WindowRef::Primary) => true,
+                    RenderTarget::Window(WindowRef::Entity(w)) => {
+                        self.primary_window.get(w).is_ok()
+                    }
+                    _ => false,
+                })
+                .max_by_key(|(e, c)| (c.order, *e))
+                .map(|(e, _)| e)
+        })
+    }
+}
+
+/// Derived information about the camera target for this UI node.
+#[derive(Component, Clone, Copy, Debug, Reflect, PartialEq)]
+#[reflect(Component, Default, PartialEq, Clone)]
+pub struct ComputedNodeTarget {
+    pub(crate) camera: Entity,
+    pub(crate) scale_factor: f32,
+    pub(crate) physical_size: UVec2,
+}
+
+impl Default for ComputedNodeTarget {
+    fn default() -> Self {
+        Self {
+            camera: Entity::PLACEHOLDER,
+            scale_factor: 1.,
+            physical_size: UVec2::ZERO,
+        }
+    }
+}
+
+impl ComputedNodeTarget {
+    pub fn camera(&self) -> Option<Entity> {
+        Some(self.camera).filter(|&entity| entity != Entity::PLACEHOLDER)
+    }
+
+    pub const fn scale_factor(&self) -> f32 {
+        self.scale_factor
+    }
+
+    pub const fn physical_size(&self) -> UVec2 {
+        self.physical_size
+    }
+
+    pub fn logical_size(&self) -> Vec2 {
+        self.physical_size.as_vec2() / self.scale_factor
     }
 }
 
@@ -2436,142 +2861,5 @@ mod tests {
         assert_eq!(GridPlacement::start_end(11, 21).get_span(), None);
         assert_eq!(GridPlacement::start_span(3, 5).get_end(), None);
         assert_eq!(GridPlacement::end_span(-4, 12).get_start(), None);
-    }
-}
-
-/// Indicates that this root [`Node`] entity should be rendered to a specific camera.
-///
-/// UI then will be laid out respecting the camera's viewport and scale factor, and
-/// rendered to this camera's [`bevy_render::camera::RenderTarget`].
-///
-/// Setting this component on a non-root node will have no effect. It will be overridden
-/// by the root node's component.
-///
-/// Optional if there is only one camera in the world. Required otherwise.
-#[derive(Component, Clone, Debug, Reflect, Eq, PartialEq)]
-#[reflect(Component, Debug, PartialEq)]
-pub struct TargetCamera(pub Entity);
-
-impl TargetCamera {
-    pub fn entity(&self) -> Entity {
-        self.0
-    }
-}
-
-#[derive(Component)]
-/// Marker used to identify default cameras, they will have priority over the [`PrimaryWindow`] camera.
-///
-/// This is useful if the [`PrimaryWindow`] has two cameras, one of them used
-/// just for debug purposes and the user wants a way to choose the default [`Camera`]
-/// without having to add a [`TargetCamera`] to the root node.
-///
-/// Another use is when the user wants the Ui to be in another window by default,
-/// all that is needed is to place this component on the camera
-///
-/// ```
-/// # use bevy_ui::prelude::*;
-/// # use bevy_ecs::prelude::Commands;
-/// # use bevy_render::camera::{Camera, RenderTarget};
-/// # use bevy_core_pipeline::prelude::Camera2d;
-/// # use bevy_window::{Window, WindowRef};
-///
-/// fn spawn_camera(mut commands: Commands) {
-///     let another_window = commands.spawn(Window {
-///         title: String::from("Another window"),
-///         ..Default::default()
-///     }).id();
-///     commands.spawn((
-///         Camera2d,
-///         Camera {
-///             target: RenderTarget::Window(WindowRef::Entity(another_window)),
-///             ..Default::default()
-///         },
-///         // We add the Marker here so all Ui will spawn in
-///         // another window if no TargetCamera is specified
-///         IsDefaultUiCamera
-///     ));
-/// }
-/// ```
-pub struct IsDefaultUiCamera;
-
-#[derive(SystemParam)]
-pub struct DefaultUiCamera<'w, 's> {
-    cameras: Query<'w, 's, (Entity, &'static Camera)>,
-    default_cameras: Query<'w, 's, Entity, (With<Camera>, With<IsDefaultUiCamera>)>,
-    primary_window: Query<'w, 's, Entity, With<PrimaryWindow>>,
-}
-
-impl<'w, 's> DefaultUiCamera<'w, 's> {
-    pub fn get(&self) -> Option<Entity> {
-        self.default_cameras.get_single().ok().or_else(|| {
-            // If there isn't a single camera and the query isn't empty, there is two or more cameras queried.
-            if !self.default_cameras.is_empty() {
-                warn_once!("Two or more Entities with IsDefaultUiCamera found when only one Camera with this marker is allowed.");
-            }
-            self.cameras
-                .iter()
-                .filter(|(_, c)| match c.target {
-                    RenderTarget::Window(WindowRef::Primary) => true,
-                    RenderTarget::Window(WindowRef::Entity(w)) => {
-                        self.primary_window.get(w).is_ok()
-                    }
-                    _ => false,
-                })
-                .max_by_key(|(e, c)| (c.order, *e))
-                .map(|(e, _)| e)
-        })
-    }
-}
-
-/// Marker for controlling whether Ui is rendered with or without anti-aliasing
-/// in a camera. By default, Ui is always anti-aliased.
-///
-/// **Note:** This does not affect text anti-aliasing. For that, use the `font_smoothing` property of the [`TextFont`](bevy_text::TextFont) component.
-///
-/// ```
-/// use bevy_core_pipeline::prelude::*;
-/// use bevy_ecs::prelude::*;
-/// use bevy_ui::prelude::*;
-///
-/// fn spawn_camera(mut commands: Commands) {
-///     commands.spawn((
-///         Camera2d,
-///         // This will cause all Ui in this camera to be rendered without
-///         // anti-aliasing
-///         UiAntiAlias::Off,
-///     ));
-/// }
-/// ```
-#[derive(Component, Clone, Copy, Default, Debug, Reflect, Eq, PartialEq)]
-pub enum UiAntiAlias {
-    /// UI will render with anti-aliasing
-    #[default]
-    On,
-    /// UI will render without anti-aliasing
-    Off,
-}
-
-/// Number of shadow samples.
-/// A larger value will result in higher quality shadows.
-/// Default is 4, values higher than ~10 offer diminishing returns.
-///
-/// ```
-/// use bevy_core_pipeline::prelude::*;
-/// use bevy_ecs::prelude::*;
-/// use bevy_ui::prelude::*;
-///
-/// fn spawn_camera(mut commands: Commands) {
-///     commands.spawn((
-///         Camera2d,
-///         UiBoxShadowSamples(6),
-///     ));
-/// }
-/// ```
-#[derive(Component, Clone, Copy, Debug, Reflect, Eq, PartialEq)]
-pub struct UiBoxShadowSamples(pub u32);
-
-impl Default for UiBoxShadowSamples {
-    fn default() -> Self {
-        Self(4)
     }
 }

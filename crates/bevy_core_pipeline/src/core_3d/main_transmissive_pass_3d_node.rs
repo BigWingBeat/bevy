@@ -1,18 +1,19 @@
 use super::{Camera3d, ViewTransmissionTexture};
 use crate::core_3d::Transmissive3d;
 use bevy_ecs::{prelude::*, query::QueryItem};
+use bevy_image::ToExtents;
 use bevy_render::{
-    camera::ExtractedCamera,
+    camera::{ExtractedCamera, MainPassResolutionOverride},
     render_graph::{NodeRunError, RenderGraphContext, ViewNode},
     render_phase::ViewSortedRenderPhases,
-    render_resource::{Extent3d, RenderPassDescriptor, StoreOp},
+    render_resource::{RenderPassDescriptor, StoreOp},
     renderer::RenderContext,
-    view::{ViewDepthTexture, ViewTarget},
+    view::{ExtractedView, ViewDepthTexture, ViewTarget},
 };
-use bevy_utils::tracing::error;
-#[cfg(feature = "trace")]
-use bevy_utils::tracing::info_span;
 use core::ops::Range;
+use tracing::error;
+#[cfg(feature = "trace")]
+use tracing::info_span;
 
 /// A [`bevy_render::render_graph::Node`] that runs the [`Transmissive3d`]
 /// [`ViewSortedRenderPhases`].
@@ -22,17 +23,21 @@ pub struct MainTransmissivePass3dNode;
 impl ViewNode for MainTransmissivePass3dNode {
     type ViewQuery = (
         &'static ExtractedCamera,
+        &'static ExtractedView,
         &'static Camera3d,
         &'static ViewTarget,
         Option<&'static ViewTransmissionTexture>,
         &'static ViewDepthTexture,
+        Option<&'static MainPassResolutionOverride>,
     );
 
     fn run(
         &self,
         graph: &mut RenderGraphContext,
         render_context: &mut RenderContext,
-        (camera, camera_3d, target, transmission, depth): QueryItem<Self::ViewQuery>,
+        (camera, view, camera_3d, target, transmission, depth, resolution_override): QueryItem<
+            Self::ViewQuery,
+        >,
         world: &World,
     ) -> Result<(), NodeRunError> {
         let view_entity = graph.view_entity();
@@ -43,7 +48,7 @@ impl ViewNode for MainTransmissivePass3dNode {
             return Ok(());
         };
 
-        let Some(transmissive_phase) = transmissive_phases.get(&view_entity) else {
+        let Some(transmissive_phase) = transmissive_phases.get(&view.retained_view_entity) else {
             return Ok(());
         };
 
@@ -84,11 +89,7 @@ impl ViewNode for MainTransmissivePass3dNode {
                     render_context.command_encoder().copy_texture_to_texture(
                         target.main_texture().as_image_copy(),
                         transmission.texture.as_image_copy(),
-                        Extent3d {
-                            width: physical_target_size.x,
-                            height: physical_target_size.y,
-                            depth_or_array_layers: 1,
-                        },
+                        physical_target_size.to_extents(),
                     );
 
                     let mut render_pass =
@@ -110,7 +111,7 @@ impl ViewNode for MainTransmissivePass3dNode {
                     render_context.begin_tracked_render_pass(render_pass_descriptor);
 
                 if let Some(viewport) = camera.viewport.as_ref() {
-                    render_pass.set_camera_viewport(viewport);
+                    render_pass.set_camera_viewport(&viewport.with_override(resolution_override));
                 }
 
                 if let Err(err) = transmissive_phase.render(&mut render_pass, world, view_entity) {

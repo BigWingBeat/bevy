@@ -80,7 +80,7 @@ struct Position { x: f32, y: f32 }
 
 fn print_position(query: Query<(Entity, &Position)>) {
     for (entity, position) in &query {
-        println!("Entity {:?} is at position: x {}, y {}", entity, position.x, position.y);
+        println!("Entity {} is at position: x {}, y {}", entity, position.x, position.y);
     }
 }
 ```
@@ -172,7 +172,7 @@ struct Player;
 struct Alive;
 
 // Gets the Position component of all Entities with Player component and without the Alive
-// component. 
+// component.
 fn system(query: Query<&Position, (With<Player>, Without<Alive>)>) {
     for position in &query {
     }
@@ -277,26 +277,24 @@ world.spawn(PlayerBundle {
 });
 ```
 
-### Events
+### Buffered Events
 
-Events offer a communication channel between one or more systems. Events can be sent using the system parameter `EventWriter` and received with `EventReader`.
+Buffered events offer a communication channel between one or more systems.
+They can be sent using the `EventWriter` system parameter and received with `EventReader`.
 
 ```rust
 use bevy_ecs::prelude::*;
 
-#[derive(Event)]
-struct MyEvent {
-    message: String,
+#[derive(BufferedEvent)]
+struct Message(String);
+
+fn writer(mut writer: EventWriter<Message>) {
+    writer.write(Message("Hello!".to_string()));
 }
 
-fn writer(mut writer: EventWriter<MyEvent>) {
-    writer.send(MyEvent {
-        message: "hello!".to_string(),
-    });
-}
-
-fn reader(mut reader: EventReader<MyEvent>) {
-    for event in reader.read() {
+fn reader(mut reader: EventReader<Message>) {
+    for Message(message) in reader.read() {
+        println!("{}", message);
     }
 }
 ```
@@ -309,39 +307,41 @@ Observers are systems that listen for a "trigger" of a specific `Event`:
 use bevy_ecs::prelude::*;
 
 #[derive(Event)]
-struct MyEvent {
+struct Speak {
     message: String
 }
 
 let mut world = World::new();
 
-world.add_observer(|trigger: Trigger<MyEvent>| {
-    println!("{}", trigger.event().message);
+world.add_observer(|trigger: On<Speak>| {
+    println!("{}", trigger.message);
 });
 
 world.flush();
 
-world.trigger(MyEvent {
-    message: "hello!".to_string(),
+world.trigger(Speak {
+    message: "Hello!".to_string(),
 });
 ```
 
-These differ from `EventReader` and `EventWriter` in that they are "reactive". Rather than happening at a specific point in a schedule, they happen _immediately_ whenever a trigger happens. Triggers can trigger other triggers, and they all will be evaluated at the same time!
+These differ from `EventReader` and `EventWriter` in that they are "reactive".
+Rather than happening at a specific point in a schedule, they happen _immediately_ whenever a trigger happens.
+Triggers can trigger other triggers, and they all will be evaluated at the same time!
 
-Events can also be triggered to target specific entities:
+If the event is an `EntityEvent`, it can also be triggered to target specific entities:
 
 ```rust
 use bevy_ecs::prelude::*;
 
-#[derive(Event)]
+#[derive(EntityEvent)]
 struct Explode;
 
 let mut world = World::new();
 let entity = world.spawn_empty().id();
 
-world.add_observer(|trigger: Trigger<Explode>, mut commands: Commands| {
-    println!("Entity {:?} goes BOOM!", trigger.entity());
-    commands.entity(trigger.entity()).despawn();
+world.add_observer(|trigger: On<Explode>, mut commands: Commands| {
+    println!("Entity {} goes BOOM!", trigger.target());
+    commands.entity(trigger.target()).despawn();
 });
 
 world.flush();
@@ -349,4 +349,4 @@ world.flush();
 world.trigger_targets(Explode, entity);
 ```
 
-[bevy]: https://bevyengine.org/
+[bevy]: https://bevy.org/
