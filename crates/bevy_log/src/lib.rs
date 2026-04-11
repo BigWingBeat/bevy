@@ -418,8 +418,13 @@ impl LogPlugin {
         match result {
             Ok(combined_filters) => combined_filters,
             Err(e) => {
-                // We cannot use the `error!` macro here because the logger is not ready yet.
-                eprintln!("LogPlugin failed to parse filter from env: {e}");
+                #[expect(
+                    clippy::print_stderr,
+                    reason = "We cannot use the `error!` macro here because the logger is not ready yet."
+                )]
+                {
+                    eprintln!("LogPlugin failed to parse filter from env: {e}");
+                }
                 default_filters
             }
         }
